@@ -1,33 +1,43 @@
-import { Database, Bell, User, Sun, Moon } from 'lucide-react';
-import { formatTimeAgo } from '@/lib/formatters';
+import { Database, Bell, User, Sun, Moon, Sparkles } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
+import { SummarizationPanel } from '@/components/features/summarization/SummarizationPanel';
+import { useState } from 'react';
 
 export function Header() {
-  const lastUpdated = new Date();
   const { theme, toggleTheme } = useTheme();
+  const [showSummarization, setShowSummarization] = useState(false);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex h-16 items-center justify-between px-6">
+      <div className="container flex h-16 items-center justify-between pl-6 pr-0">
         {/* Logo and Brand */}
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
             <Database className="h-6 w-6 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-lg font-bold">DB Intelligence</h1>
+            <h1 className="text-lg font-bold flex items-center gap-2">
+              DB Intelligence
+              <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                v1.0.0
+              </span>
+            </h1>
             <p className="text-xs text-muted-foreground">Database Monitoring Platform</p>
           </div>
         </div>
 
-        {/* Right Section */}
+        {/* Right Section - Reorganized */}
         <div className="flex items-center gap-4">
-          {/* Last Updated */}
-          <div className="hidden sm:block text-sm text-muted-foreground">
-            Updated {formatTimeAgo(lastUpdated)}
-          </div>
+          {/* AI Insights Button (leftmost) */}
+          <button
+            onClick={() => setShowSummarization(true)}
+            className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 transition-all shadow-sm hover:shadow-md"
+          >
+            <Sparkles className="h-4 w-4" />
+            <span className="text-sm font-medium">AI Insights</span>
+          </button>
 
-          {/* Theme Toggle */}
+          {/* Theme Toggle - Day/Night */}
           <button
             onClick={toggleTheme}
             className="rounded-full p-2 hover:bg-accent transition-colors"
@@ -52,9 +62,9 @@ export function Header() {
             </span>
           </button>
 
-          {/* User Avatar */}
+          {/* User Avatar (rightmost) */}
           <button
-            className="flex items-center gap-2 rounded-full p-2 hover:bg-accent transition-colors"
+            className="flex items-center gap-2 rounded-full hover:bg-accent transition-colors"
             aria-label="User menu"
           >
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary">
@@ -63,6 +73,11 @@ export function Header() {
           </button>
         </div>
       </div>
+
+      {/* Summarization Modal */}
+      {showSummarization && (
+        <SummarizationPanel onClose={() => setShowSummarization(false)} />
+      )}
     </header>
   );
 }

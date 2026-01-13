@@ -40,7 +40,7 @@ export function DatabaseGrid({ databases }: DatabaseGridProps) {
               <th className="px-4 py-3 text-left text-sm font-semibold">Environment</th>
               <th className="px-4 py-3 text-left text-sm font-semibold">Health</th>
               <th className="px-4 py-3 text-right text-sm font-semibold">Cost/mo</th>
-              <th className="px-4 py-3 text-center text-sm font-semibold">Issues</th>
+              <th className="pl-4 pr-0 py-3 text-center text-sm font-semibold">Issues</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -121,7 +121,7 @@ export function DatabaseGrid({ databases }: DatabaseGridProps) {
                 </td>
 
                 {/* Issues */}
-                <td className="px-4 py-3 text-center">
+                <td className="pl-4 pr-0 py-3 text-center">
                   {db.activeIssues > 0 ? (
                     <div className="flex items-center justify-center gap-1">
                       <AlertCircle className="h-4 w-4 text-red-500" />
