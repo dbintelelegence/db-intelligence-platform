@@ -3,10 +3,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
-  "env": {
-    "VITE_OPENAI_API_KEY": "@openai-api-key",
-    "VITE_ANTHROPIC_API_KEY": "@anthropic-api-key"
-  },
   "headers": [
     {
       "source": "/(.*)",
