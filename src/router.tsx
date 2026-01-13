@@ -4,6 +4,7 @@ import { OverviewPage } from './pages/OverviewPage';
 import { DatabasesPage } from './pages/DatabasesPage';
 import { IssuesPage } from './pages/IssuesPage';
 import { BillingPage } from './pages/BillingPage';
+import { AlertsPage } from './pages/AlertsPage';
 
 export const router = createBrowserRouter([
   {
@@ -25,6 +26,10 @@ export const router = createBrowserRouter([
       {
         path: 'billing',
         element: <BillingPage />,
+      },
+      {
+        path: 'alerts',
+        element: <AlertsPage />,
       },
     ],
   },
