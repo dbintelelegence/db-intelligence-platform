@@ -25,7 +25,12 @@ export function Header() {
             <Database className="h-6 w-6 text-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-lg font-bold">DB Intelligence</h1>
+            <h1 className="text-lg font-bold flex items-center gap-2">
+              DB Intelligence
+              <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                v1.0.0
+              </span>
+            </h1>
             <p className="text-xs text-muted-foreground">Database Monitoring Platform</p>
           </div>
         </div>
