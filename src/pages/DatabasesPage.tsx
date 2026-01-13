@@ -1,9 +1,8 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { mockData } from '@/data/mock-data';
 import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
 import { DatabaseFilters } from '@/components/features/databases/DatabaseFilters';
-import type { Database, CloudProvider, DatabaseType, Environment, HealthStatus } from '@/types';
+import type { CloudProvider, DatabaseType, Environment, HealthStatus } from '@/types';
 
 interface Filters {
   cloud?: CloudProvider;
@@ -14,7 +13,6 @@ interface Filters {
 }
 
 export function DatabasesPage() {
-  const navigate = useNavigate();
   const [filters, setFilters] = useState<Filters>({});
 
   // Filter databases based on selected filters
@@ -67,11 +65,6 @@ export function DatabasesPage() {
 
   const handleClearFilters = () => {
     setFilters({});
-  };
-
-  const handleDatabaseClick = (database: Database) => {
-    // Navigate to database detail (we'll build this later)
-    navigate(`/database/${database.id}`);
   };
 
   return (
