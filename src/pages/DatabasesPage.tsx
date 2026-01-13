@@ -2,7 +2,6 @@ import { useSearchParams } from 'react-router-dom';
 import { mockData } from '@/data/mock-data';
 import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
 import { X } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 export function DatabasesPage() {
   const [searchParams, setSearchParams] = useSearchParams();

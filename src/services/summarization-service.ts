@@ -3,8 +3,7 @@ import type {
   SummarizationRequest,
   SummarizationResponse,
   TimeWindow,
-  SummarizationContext,
-  LLMConfig
+  SummarizationContext
 } from '@/types/summarization';
 import type { Database, Issue } from '@/types';
 import { callLLM, parseLLMResponse } from './llm-service';
@@ -99,15 +98,15 @@ function analyzeIssues(issues: Issue[]): { insights: string[]; recommendations: 
   const recommendations: string[] = [];
 
   const criticalIssues = issues.filter(i => i.severity === 'critical');
-  const highIssues = issues.filter(i => i.severity === 'high');
+  const warningIssues = issues.filter(i => i.severity === 'warning');
 
   if (criticalIssues.length > 0) {
     insights.push(`${criticalIssues.length} critical issue(s) detected across monitored databases`);
     recommendations.push('Address critical issues immediately to prevent service disruption');
   }
 
-  if (highIssues.length > 0) {
-    insights.push(`${highIssues.length} high-severity issue(s) requiring attention`);
+  if (warningIssues.length > 0) {
+    insights.push(`${warningIssues.length} warning-level issue(s) requiring attention`);
   }
 
   // Group by category
@@ -129,7 +128,7 @@ function analyzeIssues(issues: Issue[]): { insights: string[]; recommendations: 
 /**
  * Generates recommendations based on context
  */
-function generateRecommendations(context: SummarizationContext, prompt: string): string[] {
+function generateRecommendations(context: SummarizationContext): string[] {
   const recommendations: string[] = [];
 
   // Check for connection pool issues
@@ -154,7 +153,7 @@ function generateRecommendations(context: SummarizationContext, prompt: string):
   }
 
   // Check for unresolved issues
-  const unresolvedIssues = context.issues.filter((i: Issue) => i.status === 'open' || i.status === 'investigating');
+  const unresolvedIssues = context.issues.filter((i: Issue) => i.status === 'active' || i.status === 'acknowledged');
   if (unresolvedIssues.length > 0) {
     recommendations.push(`${unresolvedIssues.length} unresolved issue(s) require investigation and remediation`);
   }
@@ -283,7 +282,7 @@ export async function generateAISummary(request: SummarizationRequest): Promise<
 
       if (recommendations.length < 3) {
         const { recommendations: issueRecs } = analyzeIssues(context.issues);
-        const generalRecs = generateRecommendations(context, request.prompt);
+        const generalRecs = generateRecommendations(context);
         recommendations = [...recommendations, ...issueRecs, ...generalRecs].slice(0, 5);
       }
     } catch (error) {
@@ -292,7 +291,7 @@ export async function generateAISummary(request: SummarizationRequest): Promise<
       summary = generateSummary(context, request.prompt);
       const healthInsights = analyzeHealth(context.databases);
       const { insights: issueInsights, recommendations: issueRecs } = analyzeIssues(context.issues);
-      const generalRecs = generateRecommendations(context, request.prompt);
+      const generalRecs = generateRecommendations(context);
       insights = [...healthInsights, ...issueInsights].slice(0, 5);
       recommendations = [...issueRecs, ...generalRecs].slice(0, 5);
     }
@@ -302,7 +301,7 @@ export async function generateAISummary(request: SummarizationRequest): Promise<
     summary = generateSummary(context, request.prompt);
     const healthInsights = analyzeHealth(context.databases);
     const { insights: issueInsights, recommendations: issueRecs } = analyzeIssues(context.issues);
-    const generalRecs = generateRecommendations(context, request.prompt);
+    const generalRecs = generateRecommendations(context);
     insights = [...healthInsights, ...issueInsights].slice(0, 5);
     recommendations = [...issueRecs, ...generalRecs].slice(0, 5);
   }

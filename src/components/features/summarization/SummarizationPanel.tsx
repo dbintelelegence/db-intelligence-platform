@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { Sparkles, Clock, X, MessageSquare } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { TimeWindow, ConversationMessage, LLMConfig } from '@/types/summarization';
 import { generateAISummary } from '@/services/summarization-service';
 import { ChatInterface } from './ChatInterface';

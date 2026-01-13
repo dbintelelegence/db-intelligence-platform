@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Bot, User as UserIcon, Settings, CheckCircle2, AlertCircle, Info } from 'lucide-react';
+import { Send, Loader2, Bot, User as UserIcon, Settings, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ConversationMessage, LLMConfig, TimeWindow } from '@/types/summarization';
 
