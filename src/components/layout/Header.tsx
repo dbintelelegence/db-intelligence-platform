@@ -1,10 +1,20 @@
-import { Database, Bell, User, Sun, Moon } from 'lucide-react';
+import { Database, Bell, User, Sun, Moon, Activity, AlertCircle, TrendingUp, Sparkles } from 'lucide-react';
 import { formatTimeAgo } from '@/lib/formatters';
 import { useTheme } from '@/components/ThemeProvider';
+import { mockData } from '@/data/mock-data';
+import { SummarizationPanel } from '@/components/features/summarization/SummarizationPanel';
+import { useState } from 'react';
 
 export function Header() {
   const lastUpdated = new Date();
   const { theme, toggleTheme } = useTheme();
+  const [showSummarization, setShowSummarization] = useState(false);
+
+  // Calculate summary metrics
+  const totalDatabases = mockData.databases.length;
+  const healthyDatabases = mockData.databases.filter(db => db.healthStatus === 'excellent' || db.healthStatus === 'good').length;
+  const criticalIssues = mockData.issues.filter(i => i.severity === 'critical').length;
+  const healthPercentage = Math.round((healthyDatabases / totalDatabases) * 100);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -22,6 +32,31 @@ export function Header() {
 
         {/* Right Section */}
         <div className="flex items-center gap-4">
+          {/* AI Summarization Button */}
+          <button
+            onClick={() => setShowSummarization(true)}
+            className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 transition-all shadow-sm hover:shadow-md"
+          >
+            <Sparkles className="h-4 w-4" />
+            <span className="text-sm font-medium">AI Insights</span>
+          </button>
+
+          {/* Summary Section - Compact version */}
+          <div className="hidden xl:flex items-center gap-3 px-4 py-2 border-l">
+            <div className="flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5 text-green-500" />
+              <span className="text-xs font-semibold">{healthPercentage}%</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+              <span className="text-xs font-semibold">{criticalIssues}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <TrendingUp className="h-3.5 w-3.5 text-blue-500" />
+              <span className="text-xs font-semibold">{totalDatabases}</span>
+            </div>
+          </div>
+
           {/* Last Updated */}
           <div className="hidden sm:block text-sm text-muted-foreground">
             Updated {formatTimeAgo(lastUpdated)}
@@ -63,6 +98,11 @@ export function Header() {
           </button>
         </div>
       </div>
+
+      {/* Summarization Modal */}
+      {showSummarization && (
+        <SummarizationPanel onClose={() => setShowSummarization(false)} />
+      )}
     </header>
   );
 }
