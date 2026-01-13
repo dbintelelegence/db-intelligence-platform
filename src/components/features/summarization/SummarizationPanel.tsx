@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Sparkles, Clock, X, MessageSquare } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Sparkles, Clock, X, MessageSquare, GripVertical } from 'lucide-react';
 import type { TimeWindow, ConversationMessage, LLMConfig } from '@/types/summarization';
 import { generateAISummary } from '@/services/summarization-service';
 import { ChatInterface } from './ChatInterface';
@@ -24,6 +24,14 @@ export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
     provider: 'mock',
     temperature: 0.7,
   });
+  const [panelWidth, setPanelWidth] = useState(672); // 42rem default (max-w-2xl)
+  const [panelHeight, setPanelHeight] = useState(0); // Will be calculated on mount
+  const [position, setPosition] = useState({ x: 0, y: 20 }); // Start top-right
+  const [isResizing, setIsResizing] = useState<'left' | 'top' | 'corner' | false>(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const startPosRef = useRef({ x: 0, y: 0, width: 0, height: 0 });
+  const dragStartRef = useRef({ mouseX: 0, mouseY: 0, panelX: 0, panelY: 0 });
 
   const handleSendMessage = async (messageText: string) => {
     // Add user message
@@ -129,14 +137,191 @@ export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
     return () => document.removeEventListener('keydown', handleEscape);
   }, [onClose]);
 
+  // Initialize panel height and position on mount
+  useEffect(() => {
+    const updateHeight = () => {
+      const headerHeight = 80; // 5rem
+      const padding = 32; // 2rem top + bottom padding
+      const newHeight = window.innerHeight - headerHeight - padding;
+      setPanelHeight(newHeight);
+
+      // Set initial position to top-right
+      setPosition({
+        x: window.innerWidth - panelWidth - 32, // 32px padding from right
+        y: 20, // 20px from top
+      });
+    };
+
+    updateHeight();
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
+
+  // Handle drag functionality
+  const handleDragStart = (e: React.MouseEvent) => {
+    // Only allow dragging from header, not from resize handles
+    if ((e.target as HTMLElement).closest('.resize-handle')) {
+      return;
+    }
+
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = {
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      panelX: position.x,
+      panelY: position.y,
+    };
+  };
+
+  // Handle resize functionality
+  const handleMouseDown = (direction: 'left' | 'top' | 'corner') => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizing(direction);
+    startPosRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      width: panelWidth,
+      height: panelHeight,
+    };
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      // Handle dragging
+      if (isDragging) {
+        const deltaX = e.clientX - dragStartRef.current.mouseX;
+        const deltaY = e.clientY - dragStartRef.current.mouseY;
+
+        const newX = dragStartRef.current.panelX + deltaX;
+        const newY = dragStartRef.current.panelY + deltaY;
+
+        // Keep panel within viewport bounds
+        const maxX = window.innerWidth - panelWidth - 32; // 32px padding
+        const maxY = window.innerHeight - panelHeight - 32;
+
+        setPosition({
+          x: Math.max(0, Math.min(newX, maxX)),
+          y: Math.max(0, Math.min(newY, maxY)),
+        });
+        return;
+      }
+
+      // Handle resizing
+      if (!isResizing) return;
+
+      const minWidth = 400;
+      const maxWidth = window.innerWidth * 0.9;
+      const minHeight = 300;
+      const maxHeight = window.innerHeight - 100;
+
+      if (isResizing === 'left' || isResizing === 'corner') {
+        // Resize from left edge (dragging left increases width)
+        const deltaX = startPosRef.current.x - e.clientX;
+        const newWidth = startPosRef.current.width + deltaX;
+
+        if (newWidth >= minWidth && newWidth <= maxWidth) {
+          setPanelWidth(newWidth);
+          // Adjust position to keep right edge fixed
+          setPosition(prev => ({ ...prev, x: prev.x - (newWidth - panelWidth) }));
+        }
+      }
+
+      if (isResizing === 'top' || isResizing === 'corner') {
+        // Resize from top edge (dragging up increases height)
+        const deltaY = startPosRef.current.y - e.clientY;
+        const newHeight = startPosRef.current.height + deltaY;
+
+        if (newHeight >= minHeight && newHeight <= maxHeight) {
+          setPanelHeight(newHeight);
+          // Adjust position to keep bottom edge fixed
+          setPosition(prev => ({ ...prev, y: prev.y - (newHeight - panelHeight) }));
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      setIsDragging(false);
+    };
+
+    if (isResizing || isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+
+      if (isDragging) {
+        document.body.style.cursor = 'move';
+      } else if (isResizing === 'left') {
+        document.body.style.cursor = 'ew-resize';
+      } else if (isResizing === 'top') {
+        document.body.style.cursor = 'ns-resize';
+      } else if (isResizing === 'corner') {
+        document.body.style.cursor = 'nwse-resize';
+      }
+
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing, isDragging, panelHeight, panelWidth, position.x, position.y]);
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
       onClick={handleBackdropClick}
     >
-      <div className="bg-background rounded-lg shadow-2xl w-full max-w-5xl h-[85vh] overflow-hidden flex flex-col border">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-primary/10 to-primary/5">
+      <div
+        ref={panelRef}
+        className="bg-background rounded-lg shadow-2xl overflow-hidden flex flex-row border relative"
+        style={{
+          position: 'fixed',
+          left: `${position.x}px`,
+          top: `${position.y}px`,
+          width: `${panelWidth}px`,
+          height: panelHeight > 0 ? `${panelHeight}px` : 'calc(100vh - 6rem)',
+        }}
+      >
+        {/* Left Resize Handle */}
+        <div
+          className="resize-handle absolute left-0 top-0 bottom-0 w-1 hover:w-2 bg-transparent hover:bg-primary/50 cursor-ew-resize z-10 transition-all"
+          onMouseDown={handleMouseDown('left')}
+        >
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 hover:opacity-100 transition-opacity">
+            <GripVertical className="h-6 w-6 text-primary" />
+          </div>
+        </div>
+
+        {/* Top Resize Handle */}
+        <div
+          className="resize-handle absolute top-0 left-0 right-0 h-1 hover:h-2 bg-transparent hover:bg-primary/50 cursor-ns-resize z-10 transition-all"
+          onMouseDown={handleMouseDown('top')}
+        >
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rotate-90 opacity-0 hover:opacity-100 transition-opacity">
+            <GripVertical className="h-6 w-6 text-primary" />
+          </div>
+        </div>
+
+        {/* Top-Left Corner Resize Handle */}
+        <div
+          className="resize-handle absolute top-0 left-0 w-4 h-4 cursor-nwse-resize z-20"
+          onMouseDown={handleMouseDown('corner')}
+        >
+          <div className="absolute top-1 left-1 w-2 h-2 bg-primary/30 hover:bg-primary/70 rounded-full transition-colors" />
+        </div>
+
+        {/* Main Content */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Header - Draggable */}
+        <div
+          className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-primary/10 to-primary/5 cursor-move"
+          onMouseDown={handleDragStart}
+        >
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
               <Sparkles className="h-5 w-5 text-primary-foreground" />
@@ -149,7 +334,7 @@ export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {/* Time Window Selector */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background border">
               <Clock className="h-4 w-4 text-muted-foreground" />
@@ -178,14 +363,15 @@ export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
               </button>
             )}
 
-            {/* Close button */}
+            {/* Close button - Highly visible */}
             {onClose && (
               <button
                 onClick={onClose}
-                className="rounded-full p-2 hover:bg-muted transition-colors"
+                className="rounded-lg p-2 bg-muted/50 hover:bg-red-500 hover:text-white transition-all border border-border hover:border-red-500 flex items-center justify-center"
                 aria-label="Close"
+                title="Close (ESC)"
               >
-                <X className="h-5 w-5" />
+                <X className="h-5 w-5 stroke-[2.5]" />
               </button>
             )}
           </div>
@@ -201,6 +387,7 @@ export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
             llmConfig={llmConfig}
             onConfigChange={handleConfigChange}
           />
+        </div>
         </div>
       </div>
     </div>

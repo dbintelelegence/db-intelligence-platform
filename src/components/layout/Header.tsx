@@ -37,15 +37,6 @@ export function Header() {
 
         {/* Right Section */}
         <div className="flex items-center gap-4">
-          {/* AI Summarization Button */}
-          <button
-            onClick={() => setShowSummarization(true)}
-            className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 transition-all shadow-sm hover:shadow-md"
-          >
-            <Sparkles className="h-4 w-4" />
-            <span className="text-sm font-medium">AI Insights</span>
-          </button>
-
           {/* Summary Section - Compact version */}
           <div className="hidden xl:flex items-center gap-3 px-4 py-2 border-l">
             <div className="flex items-center gap-1.5">
@@ -100,6 +91,15 @@ export function Header() {
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary">
               <User className="h-5 w-5 text-primary-foreground" />
             </div>
+          </button>
+
+          {/* AI Insights Button - Moved to far right */}
+          <button
+            onClick={() => setShowSummarization(true)}
+            className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 transition-all shadow-sm hover:shadow-md"
+          >
+            <Sparkles className="h-4 w-4" />
+            <span className="text-sm font-medium">AI Insights</span>
           </button>
         </div>
       </div>
