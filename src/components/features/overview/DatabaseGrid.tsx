@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import type { Database } from '@/types';
 import { HealthBadge } from '@/components/common/HealthBadge';
 import { formatCurrency } from '@/lib/formatters';
@@ -9,6 +10,7 @@ interface DatabaseGridProps {
 }
 
 export function DatabaseGrid({ databases }: DatabaseGridProps) {
+  const navigate = useNavigate();
   const getCloudBadgeColor = (cloud: string) => {
     const colors = {
       aws: 'bg-orange-100 text-orange-800 border-orange-200',
@@ -47,6 +49,7 @@ export function DatabaseGrid({ databases }: DatabaseGridProps) {
             {databases.map((db) => (
               <tr
                 key={db.id}
+                onClick={() => navigate(`/databases/${db.id}`)}
                 className="hover:bg-muted/50 transition-colors cursor-pointer"
               >
                 {/* Name */}
