@@ -41,6 +41,7 @@ export function CostTrendChart({ data, groupBy }: CostTrendChartProps) {
       Redis: entry.byType.redis || 0,
       DynamoDB: entry.byType.dynamodb || 0,
       Aurora: entry.byType.aurora || 0,
+      Elasticsearch: entry.byType.elasticsearch || 0,
     };
   });
 
@@ -58,6 +59,7 @@ export function CostTrendChart({ data, groupBy }: CostTrendChartProps) {
     Redis: '#ef4444', // red
     DynamoDB: '#f59e0b', // amber
     Aurora: '#ec4899', // pink
+    Elasticsearch: '#14b8a6', // teal
   };
 
   const totalColors = {

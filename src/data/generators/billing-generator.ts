@@ -137,6 +137,7 @@ export function generateCostTimeSeries(databases: Database[], days: number = 30)
       redis: 0,
       dynamodb: 0,
       aurora: 0,
+      elasticsearch: 0,
     };
     const byRegion: Record<string, number> = {};
 
