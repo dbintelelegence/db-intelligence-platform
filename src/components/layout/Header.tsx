@@ -1,11 +1,16 @@
 import { Database, Bell, User, Sun, Moon, Sparkles } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { SummarizationPanel } from '@/components/features/summarization/SummarizationPanel';
+import { AlertsDropdown } from './AlertsDropdown';
+import { mockData } from '@/data/mock-data';
 import { useState } from 'react';
 
 export function Header() {
   const { theme, toggleTheme } = useTheme();
   const [showSummarization, setShowSummarization] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
+
+  const unreadCount = mockData.alerts.filter((a) => a.status === 'unread').length;
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -51,16 +56,31 @@ export function Header() {
           </button>
 
           {/* Notification Icon */}
-          <button
-            className="relative rounded-full p-2 hover:bg-accent transition-colors"
-            aria-label="Notifications"
-          >
-            <Bell className="h-5 w-5" />
-            <span className="absolute top-1 right-1 flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500"></span>
-            </span>
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowAlerts(!showAlerts)}
+              className="relative rounded-full p-2 hover:bg-accent transition-colors"
+              aria-label="Notifications"
+            >
+              <Bell className="h-5 w-5" />
+              {unreadCount > 0 && (
+                <>
+                  <span className="absolute top-1 right-1 flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500"></span>
+                  </span>
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+
+            {/* Alerts Dropdown */}
+            {showAlerts && <AlertsDropdown onClose={() => setShowAlerts(false)} />}
+          </div>
 
           {/* User Avatar (rightmost) */}
           <button
