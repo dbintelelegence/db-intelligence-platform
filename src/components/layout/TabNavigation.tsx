@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Database, AlertTriangle, DollarSign, Cloud, Server, ChevronDown, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, Database, AlertTriangle, DollarSign, Bell, Cloud, Server, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { mockData } from '@/data/mock-data';
 import { useState } from 'react';
@@ -10,6 +10,7 @@ export function TabNavigation() {
 
   // Calculate issue counts for badge
   const criticalIssuesCount = mockData.issues.filter(i => i.severity === 'critical').length;
+  const unreadAlertsCount = mockData.alerts.filter(a => a.status === 'unread').length;
 
   const tabs = [
     {
@@ -29,6 +30,13 @@ export function TabNavigation() {
       icon: AlertTriangle,
       badge: criticalIssuesCount,
       badgeColor: 'bg-red-500',
+    },
+    {
+      name: 'Alerts',
+      path: '/alerts',
+      icon: Bell,
+      badge: unreadAlertsCount,
+      badgeColor: 'bg-blue-500',
     },
     {
       name: 'Billing & Cost',

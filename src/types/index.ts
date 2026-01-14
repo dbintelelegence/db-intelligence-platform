@@ -4,6 +4,7 @@ export * from './metrics';
 export * from './issues';
 export * from './billing';
 export * from './summarization';
+export * from './alerts';
 
 // Utility types
 export interface FilterOptions {
