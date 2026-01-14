@@ -64,6 +64,7 @@ export function TabNavigation() {
   const redisCount = mockData.databases.filter(db => db.type === 'redis').length;
   const dynamoCount = mockData.databases.filter(db => db.type === 'dynamodb').length;
   const auroraCount = mockData.databases.filter(db => db.type === 'aurora').length;
+  const elasticsearchCount = mockData.databases.filter(db => db.type === 'elasticsearch').length;
 
   const cloudGroups = [
     { name: 'AWS', path: '/databases?cloud=aws', count: awsCount, color: 'text-orange-600' },
@@ -78,6 +79,7 @@ export function TabNavigation() {
     { name: 'Redis', path: '/databases?type=redis', count: redisCount },
     { name: 'DynamoDB', path: '/databases?type=dynamodb', count: dynamoCount },
     { name: 'Aurora', path: '/databases?type=aurora', count: auroraCount },
+    { name: 'Elasticsearch', path: '/databases?type=elasticsearch', count: elasticsearchCount },
   ];
 
   return (

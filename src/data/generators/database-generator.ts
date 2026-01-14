@@ -1,7 +1,7 @@
 import type { Database, DatabaseType, CloudProvider, Environment, Trend } from '@/types';
 import { getHealthStatus } from '@/constants/health-thresholds';
 
-const DATABASE_TYPES: DatabaseType[] = ['postgres', 'mysql', 'mongodb', 'redis', 'dynamodb', 'aurora'];
+const DATABASE_TYPES: DatabaseType[] = ['postgres', 'mysql', 'mongodb', 'redis', 'dynamodb', 'aurora', 'elasticsearch'];
 const CLOUD_PROVIDERS: CloudProvider[] = ['aws', 'gcp', 'azure'];
 const ENVIRONMENTS: Environment[] = ['production', 'staging', 'development'];
 
@@ -106,6 +106,7 @@ function generateCost(dbType: DatabaseType, cloud: CloudProvider, environment: E
     redis: 0.8,
     dynamodb: 0.9,
     aurora: 1.5,
+    elasticsearch: 1.4,
   };
 
   // Cloud multiplier

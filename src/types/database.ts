@@ -1,4 +1,4 @@
-export type DatabaseType = 'postgres' | 'mysql' | 'mongodb' | 'redis' | 'dynamodb' | 'aurora';
+export type DatabaseType = 'postgres' | 'mysql' | 'mongodb' | 'redis' | 'dynamodb' | 'aurora' | 'elasticsearch';
 export type CloudProvider = 'aws' | 'gcp' | 'azure';
 export type Environment = 'production' | 'staging' | 'development';
 export type HealthStatus = 'excellent' | 'good' | 'warning' | 'critical' | 'unknown';
