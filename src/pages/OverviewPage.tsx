@@ -1,38 +1,34 @@
-import { useMemo } from 'react';
-import { mockData } from '@/data/mock-data';
 import { ExecutiveSummary } from '@/components/features/overview/ExecutiveSummary';
 import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
+import { useOverviewData } from '@/hooks/useApi';
+import { Loader2 } from 'lucide-react';
 
 export function OverviewPage() {
-  // Calculate summary statistics
-  const summary = useMemo(() => {
-    const totalDatabases = mockData.databases.length;
-    const healthyDatabases = mockData.databases.filter(
-      db => db.healthStatus === 'excellent' || db.healthStatus === 'good'
-    ).length;
-    const warningDatabases = mockData.databases.filter(
-      db => db.healthStatus === 'warning'
-    ).length;
-    const criticalDatabases = mockData.databases.filter(
-      db => db.healthStatus === 'critical'
-    ).length;
-    const totalCost = mockData.databases.reduce(
-      (sum, db) => sum + db.monthlyCost,
-      0
-    );
-    const activeIssues = mockData.issues.filter(
-      issue => issue.status === 'active'
-    ).length;
+  const { databases, summary, isLoading, error } = useOverviewData();
 
-    return {
-      totalDatabases,
-      healthyDatabases,
-      warningDatabases,
-      criticalDatabases,
-      totalCost,
-      activeIssues,
-    };
-  }, []);
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <span className="ml-2 text-muted-foreground">Loading dashboard...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
+        <h2 className="text-lg font-semibold text-destructive">Error loading data</h2>
+        <p className="text-sm text-muted-foreground mt-2">
+          Unable to connect to the backend API. Make sure the server is running at{' '}
+          <code className="bg-muted px-1 rounded">http://localhost:8000</code>
+        </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Error: {error instanceof Error ? error.message : 'Unknown error'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -52,7 +48,7 @@ export function OverviewPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold">All Databases ({summary.totalDatabases})</h2>
         </div>
-        <DatabaseGrid databases={mockData.databases} />
+        <DatabaseGrid databases={databases} />
       </div>
     </div>
   );

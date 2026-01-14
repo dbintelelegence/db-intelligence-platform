@@ -1,23 +1,21 @@
 import { useSearchParams } from 'react-router-dom';
-import { mockData } from '@/data/mock-data';
 import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
-import { X } from 'lucide-react';
+import { useDatabases } from '@/hooks/useApi';
+import { X, Loader2 } from 'lucide-react';
 
 export function DatabasesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const cloudFilter = searchParams.get('cloud');
   const typeFilter = searchParams.get('type');
 
-  // Filter databases based on query parameters
-  let filteredDatabases = mockData.databases;
+  // Fetch databases with filters from API
+  const { data, isLoading, error } = useDatabases({
+    cloud_provider: cloudFilter || undefined,
+    database_type: typeFilter || undefined,
+    page_size: 100,
+  });
 
-  if (cloudFilter) {
-    filteredDatabases = filteredDatabases.filter(db => db.cloud === cloudFilter);
-  }
-
-  if (typeFilter) {
-    filteredDatabases = filteredDatabases.filter(db => db.type === typeFilter);
-  }
+  const databases = data?.databases || [];
 
   const clearFilters = () => {
     setSearchParams({});
@@ -51,13 +49,36 @@ export function DatabasesPage() {
     return names[type] || type;
   };
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <span className="ml-2 text-muted-foreground">Loading databases...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
+        <h2 className="text-lg font-semibold text-destructive">Error loading databases</h2>
+        <p className="text-sm text-muted-foreground mt-2">
+          Unable to connect to the backend API. Make sure the server is running.
+        </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Error: {error instanceof Error ? error.message : 'Unknown error'}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Databases</h1>
           <p className="text-muted-foreground mt-1">
-            {filteredDatabases.length} database{filteredDatabases.length !== 1 ? 's' : ''} found
+            {databases.length} database{databases.length !== 1 ? 's' : ''} found
           </p>
         </div>
         {(cloudFilter || typeFilter) && (
@@ -100,7 +121,7 @@ export function DatabasesPage() {
       )}
 
       {/* Database Grid */}
-      <DatabaseGrid databases={filteredDatabases} />
+      <DatabaseGrid databases={databases} />
     </div>
   );
 }

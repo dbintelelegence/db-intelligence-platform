@@ -4,8 +4,9 @@ import { CostTrendChart } from '@/components/features/billing/CostTrendChart';
 import { CostAnomaliesList } from '@/components/features/billing/CostAnomaliesList';
 import { CostBreakdownTable } from '@/components/features/billing/CostBreakdownTable';
 import { CostDetailDialog } from '@/components/features/billing/CostDetailDialog';
-import { mockData } from '@/data/mock-data';
+import { useBillingData } from '@/hooks/useApi';
 import type { DatabaseCost, CostAnomaly } from '@/types';
+import { Loader2 } from 'lucide-react';
 
 type GroupBy = 'total' | 'cloud' | 'type';
 
@@ -13,19 +14,24 @@ export function BillingPage() {
   const [groupBy, setGroupBy] = useState<GroupBy>('cloud');
   const [selectedCost, setSelectedCost] = useState<DatabaseCost | null>(null);
 
-  // Calculate summary statistics
+  // Fetch billing data from API
+  const { summary: billingSummary, costs, timeSeries, anomalies, isLoading, error } = useBillingData();
+
+  // Calculate summary statistics from API data
   const summary = useMemo(() => {
-    const { costs, timeSeries, anomalies } = mockData.billing;
+    if (!billingSummary) {
+      return {
+        totalCost: 0,
+        averageCost: 0,
+        trendPercentage: 0,
+        trendDirection: 'stable' as const,
+        anomalyCount: 0,
+      };
+    }
 
-    const totalCost = costs.reduce((sum, cost) => sum + cost.totalCost, 0);
-    const averageCost = totalCost / costs.length;
-
-    // Calculate trend (compare last vs first week average)
-    const lastWeek = timeSeries.slice(-7);
-    const firstWeek = timeSeries.slice(0, 7);
-    const lastWeekAvg = lastWeek.reduce((sum, entry) => sum + entry.total, 0) / lastWeek.length;
-    const firstWeekAvg = firstWeek.reduce((sum, entry) => sum + entry.total, 0) / firstWeek.length;
-    const trendPercentage = ((lastWeekAvg - firstWeekAvg) / firstWeekAvg) * 100;
+    const totalCost = billingSummary.totalCost;
+    const averageCost = costs.length > 0 ? totalCost / costs.length : 0;
+    const trendPercentage = billingSummary.costChangePercent;
     const trendDirection = trendPercentage > 5 ? 'up' : trendPercentage < -5 ? 'down' : 'stable';
 
     return {
@@ -35,15 +41,38 @@ export function BillingPage() {
       trendDirection,
       anomalyCount: anomalies.length,
     };
-  }, []);
+  }, [billingSummary, costs, anomalies]);
 
   // Handle anomaly click - find the cost for that database
   const handleAnomalyClick = (anomaly: CostAnomaly) => {
-    const cost = mockData.billing.costs.find((c) => c.databaseId === anomaly.databaseId);
+    const cost = costs.find((c) => c.databaseId === anomaly.databaseId);
     if (cost) {
       setSelectedCost(cost);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <span className="ml-2 text-muted-foreground">Loading billing data...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
+        <h2 className="text-lg font-semibold text-destructive">Error loading billing data</h2>
+        <p className="text-sm text-muted-foreground mt-2">
+          Unable to connect to the backend API. Make sure the server is running.
+        </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Error: {error instanceof Error ? error.message : 'Unknown error'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -83,15 +112,15 @@ export function BillingPage() {
             <option value="type">By Database Type</option>
           </select>
         </div>
-        <CostTrendChart data={mockData.billing.timeSeries} groupBy={groupBy} />
+        <CostTrendChart data={timeSeries} groupBy={groupBy} />
       </div>
 
       {/* Cost Anomalies */}
-      {mockData.billing.anomalies.length > 0 && (
+      {anomalies.length > 0 && (
         <div>
           <h2 className="text-xl font-semibold mb-4">Cost Anomalies</h2>
           <CostAnomaliesList
-            anomalies={mockData.billing.anomalies}
+            anomalies={anomalies}
             onAnomalyClick={handleAnomalyClick}
           />
         </div>
@@ -101,7 +130,7 @@ export function BillingPage() {
       <div>
         <h2 className="text-xl font-semibold mb-4">Cost Breakdown by Database</h2>
         <CostBreakdownTable
-          costs={mockData.billing.costs}
+          costs={costs}
           onRowClick={setSelectedCost}
         />
       </div>

@@ -3,8 +3,9 @@ import { IssuesFilters } from '@/components/features/issues/IssuesFilters';
 import { IssuesSummary } from '@/components/features/issues/IssuesSummary';
 import { IssuesList } from '@/components/features/issues/IssuesList';
 import { IssueDetailPanel } from '@/components/features/issues/IssueDetailPanel';
-import { mockData } from '@/data/mock-data';
+import { useIssues, useIssueSummary } from '@/hooks/useApi';
 import type { Issue, IssueSeverity, IssueCategory } from '@/types';
+import { Loader2 } from 'lucide-react';
 
 export function IssuesPage() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -12,14 +13,25 @@ export function IssuesPage() {
   const [categoryFilter, setCategoryFilter] = useState<IssueCategory | 'all'>('all');
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
 
-  // Filter issues based on search and filters
-  const filteredIssues = useMemo(() => {
-    let filtered = mockData.issues;
+  // Fetch issues from API with server-side filtering
+  const { data: issuesData, isLoading: issuesLoading, error: issuesError } = useIssues({
+    severity: severityFilter !== 'all' ? severityFilter : undefined,
+    category: categoryFilter !== 'all' ? categoryFilter : undefined,
+    page_size: 100,
+  });
 
-    // Search filter
+  // Fetch issue summary for counts
+  const { data: summaryData, isLoading: summaryLoading } = useIssueSummary();
+
+  const isLoading = issuesLoading || summaryLoading;
+
+  // Client-side search filtering (API doesn't support text search on issues)
+  const filteredIssues = useMemo(() => {
+    let issues = issuesData?.issues || [];
+
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(
+      issues = issues.filter(
         (issue) =>
           issue.title.toLowerCase().includes(query) ||
           issue.description.toLowerCase().includes(query) ||
@@ -27,27 +39,24 @@ export function IssuesPage() {
       );
     }
 
-    // Severity filter
-    if (severityFilter !== 'all') {
-      filtered = filtered.filter((issue) => issue.severity === severityFilter);
-    }
+    return issues;
+  }, [issuesData?.issues, searchQuery]);
 
-    // Category filter
-    if (categoryFilter !== 'all') {
-      filtered = filtered.filter((issue) => issue.category === categoryFilter);
-    }
-
-    return filtered;
-  }, [searchQuery, severityFilter, categoryFilter]);
-
-  // Calculate counts for summary
+  // Use summary data for counts, or calculate from filtered if not available
   const counts = useMemo(() => {
+    if (summaryData) {
+      return {
+        critical: summaryData.criticalCount,
+        warning: summaryData.warningCount,
+        info: summaryData.infoCount,
+      };
+    }
     return {
       critical: filteredIssues.filter((issue) => issue.severity === 'critical').length,
       warning: filteredIssues.filter((issue) => issue.severity === 'warning').length,
       info: filteredIssues.filter((issue) => issue.severity === 'info').length,
     };
-  }, [filteredIssues]);
+  }, [summaryData, filteredIssues]);
 
   const handleClearFilters = () => {
     setSearchQuery('');
@@ -60,6 +69,31 @@ export function IssuesPage() {
   };
 
   const hasActiveFilters = searchQuery !== '' || severityFilter !== 'all' || categoryFilter !== 'all';
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <span className="ml-2 text-muted-foreground">Loading issues...</span>
+      </div>
+    );
+  }
+
+  if (issuesError) {
+    return (
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6">
+        <h2 className="text-lg font-semibold text-destructive">Error loading issues</h2>
+        <p className="text-sm text-muted-foreground mt-2">
+          Unable to connect to the backend API. Make sure the server is running.
+        </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Error: {issuesError instanceof Error ? issuesError.message : 'Unknown error'}
+        </p>
+      </div>
+    );
+  }
+
+  const totalIssues = issuesData?.total || 0;
 
   return (
     <div className="space-y-6">
@@ -94,7 +128,7 @@ export function IssuesPage() {
       {/* Results Count */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Showing {filteredIssues.length} of {mockData.issues.length} issues
+          Showing {filteredIssues.length} of {totalIssues} issues
         </p>
       </div>
 
