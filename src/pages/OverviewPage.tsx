@@ -1,9 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { mockData } from '@/data/mock-data';
 import { ExecutiveSummary } from '@/components/features/overview/ExecutiveSummary';
-import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
+import { FleetTreeNavigator } from '@/components/features/overview/FleetTreeNavigator';
+import { RegionDetailPanel } from '@/components/features/overview/RegionDetailPanel';
+import { buildDatabaseTree, getDatabasesForNode, type TreeNode } from '@/utils/tree-navigation';
 
 export function OverviewPage() {
+  const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
+
   // Calculate summary statistics
   const summary = useMemo(() => {
     const totalDatabases = mockData.databases.length;
@@ -34,25 +38,43 @@ export function OverviewPage() {
     };
   }, []);
 
+  // Build tree structure
+  const tree = useMemo(() => buildDatabaseTree(mockData.databases), []);
+
+  // Get databases for selected node
+  const selectedDatabases = useMemo(() => {
+    if (!selectedNode) return [];
+    return getDatabasesForNode(selectedNode, mockData.databases);
+  }, [selectedNode]);
+
   return (
     <div className="space-y-8">
       {/* Page Title */}
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Database Overview</h1>
         <p className="text-muted-foreground mt-2">
-          Complete view of your database fleet health, performance, and costs
+          Navigate your database fleet with hierarchical tree view
         </p>
       </div>
 
       {/* Executive Summary */}
       <ExecutiveSummary {...summary} />
 
-      {/* Database Grid */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">All Databases ({summary.totalDatabases})</h2>
+      {/* Two-column layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6">
+        {/* Left sidebar - Tree Navigator */}
+        <div className="lg:sticky lg:top-6 lg:h-[calc(100vh-200px)]">
+          <FleetTreeNavigator
+            tree={tree}
+            selectedNode={selectedNode}
+            onNodeSelect={setSelectedNode}
+          />
         </div>
-        <DatabaseGrid databases={mockData.databases} />
+
+        {/* Right panel - Details */}
+        <div>
+          <RegionDetailPanel selectedNode={selectedNode} databases={selectedDatabases} />
+        </div>
       </div>
     </div>
   );
