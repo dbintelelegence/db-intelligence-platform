@@ -1,59 +1,41 @@
-import { useMemo } from 'react';
 import { mockData } from '@/data/mock-data';
-import { ExecutiveSummary } from '@/components/features/overview/ExecutiveSummary';
-import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
+import { ExecutiveStateCard } from '@/components/features/overview/ExecutiveStateCard';
+import { ContextStrip } from '@/components/features/overview/ContextStrip';
+import { DatabaseStatusGrid } from '@/components/features/overview/DatabaseStatusGrid';
+import { TopIssuesSection } from '@/components/features/overview/TopIssuesSection';
+import { RecentChangesSection } from '@/components/features/overview/RecentChangesSection';
+import { CostSnapshot } from '@/components/features/overview/CostSnapshot';
 
 export function OverviewPage() {
-  // Calculate summary statistics
-  const summary = useMemo(() => {
-    const totalDatabases = mockData.databases.length;
-    const healthyDatabases = mockData.databases.filter(
-      db => db.healthStatus === 'excellent' || db.healthStatus === 'good'
-    ).length;
-    const warningDatabases = mockData.databases.filter(
-      db => db.healthStatus === 'warning'
-    ).length;
-    const criticalDatabases = mockData.databases.filter(
-      db => db.healthStatus === 'critical'
-    ).length;
-    const totalCost = mockData.databases.reduce(
-      (sum, db) => sum + db.monthlyCost,
-      0
-    );
-    const activeIssues = mockData.issues.filter(
-      issue => issue.status === 'active'
-    ).length;
-
-    return {
-      totalDatabases,
-      healthyDatabases,
-      warningDatabases,
-      criticalDatabases,
-      totalCost,
-      activeIssues,
-    };
-  }, []);
-
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Page Title */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Database Overview</h1>
-        <p className="text-muted-foreground mt-2">
-          Complete view of your database fleet health, performance, and costs
-        </p>
+      <div className="text-center mb-2">
+        <h1 className="text-2xl font-bold tracking-tight text-muted-foreground">
+          State of Your Database Platform
+        </h1>
       </div>
 
-      {/* Executive Summary */}
-      <ExecutiveSummary {...summary} />
+      {/* Executive State Summary - The Hero */}
+      <ExecutiveStateCard databases={mockData.databases} />
 
-      {/* Database Grid */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">All Databases ({summary.totalDatabases})</h2>
-        </div>
-        <DatabaseGrid databases={mockData.databases} />
+      {/* Immediate Context Strip */}
+      <ContextStrip databases={mockData.databases} />
+
+      {/* Global Database Status Grid */}
+      <DatabaseStatusGrid databases={mockData.databases} />
+
+      {/* Two Column Layout for Issues and Changes */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Top Issues Right Now */}
+        <TopIssuesSection databases={mockData.databases} />
+
+        {/* What Changed Recently */}
+        <RecentChangesSection databases={mockData.databases} />
       </div>
+
+      {/* Cost Snapshot */}
+      <CostSnapshot databases={mockData.databases} />
     </div>
   );
 }
