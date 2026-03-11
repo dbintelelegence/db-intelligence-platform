@@ -7,7 +7,7 @@ export const HEALTH_THRESHOLDS = {
 } as const;
 
 export const HEALTH_COLORS = {
-  excellent: 'bg-green-500 text-white',
+  excellent: 'bg-emerald-600 text-white',
   good: 'bg-green-400 text-white',
   warning: 'bg-amber-500 text-white',
   critical: 'bg-red-500 text-white',
@@ -15,7 +15,7 @@ export const HEALTH_COLORS = {
 } as const;
 
 export const HEALTH_TEXT_COLORS = {
-  excellent: 'text-green-500',
+  excellent: 'text-emerald-600',
   good: 'text-green-400',
   warning: 'text-amber-500',
   critical: 'text-red-500',
@@ -23,7 +23,7 @@ export const HEALTH_TEXT_COLORS = {
 } as const;
 
 export const HEALTH_BORDER_COLORS = {
-  excellent: 'border-green-500',
+  excellent: 'border-emerald-600',
   good: 'border-green-400',
   warning: 'border-amber-500',
   critical: 'border-red-500',

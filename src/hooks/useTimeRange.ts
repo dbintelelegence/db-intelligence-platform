@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { subHours, subDays } from 'date-fns';
 
-export type TimeRangeOption = '1h' | '24h' | '7d' | '30d' | 'custom';
+export type TimeRangeOption = '1h' | '3h' | '24h' | '7d' | '30d' | 'custom';
 
 export interface TimeRange {
   value: TimeRangeOption;
@@ -16,6 +16,9 @@ function calculateTimeRange(option: TimeRangeOption): TimeRange {
   switch (option) {
     case '1h':
       start = subHours(end, 1);
+      break;
+    case '3h':
+      start = subHours(end, 3);
       break;
     case '24h':
       start = subHours(end, 24);

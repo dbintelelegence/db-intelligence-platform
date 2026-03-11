@@ -177,7 +177,7 @@ export function generateDatabases(count: number = 50): Database[] {
     const healthStatus = healthScore >= 0 ? getHealthStatus(healthScore) : 'unknown';
 
     databases.push({
-      id: `db-${i + 1}`,
+      id: `db-${Math.random().toString(16).slice(2, 8)}`,
       name: generateDatabaseName(),
       type: dbType,
       cloud,

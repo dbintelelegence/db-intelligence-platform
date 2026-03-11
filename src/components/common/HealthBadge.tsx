@@ -39,7 +39,17 @@ export function HealthBadge({
         sizeClasses[size],
         className
       )}
-      title={score !== undefined ? `Health Score: ${score}` : undefined}
+      title={(() => {
+        const descriptions: Record<HealthStatus, string> = {
+          excellent: 'All systems performing optimally',
+          good: 'Systems healthy with minor observations',
+          warning: 'Performance degradation detected',
+          critical: 'Immediate attention required',
+          unknown: 'Health data unavailable',
+        };
+        const desc = descriptions[status];
+        return score !== undefined && score >= 0 ? `${desc} (Score: ${score})` : desc;
+      })()}
     >
       <span className="relative flex h-2 w-2">
         <span
