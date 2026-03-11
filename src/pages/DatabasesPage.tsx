@@ -2,14 +2,18 @@ import { useSearchParams } from 'react-router-dom';
 import { mockData } from '@/data/mock-data';
 import { DatabaseGrid } from '@/components/features/overview/DatabaseGrid';
 import { X } from 'lucide-react';
+import { useScoredDatabases } from '@/hooks/useScoredDatabases';
 
 export function DatabasesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const cloudFilter = searchParams.get('cloud');
   const typeFilter = searchParams.get('type');
 
+  // Apply scoring config to databases
+  const scoredDatabases = useScoredDatabases(mockData.databases);
+
   // Filter databases based on query parameters
-  let filteredDatabases = mockData.databases;
+  let filteredDatabases = scoredDatabases;
 
   if (cloudFilter) {
     filteredDatabases = filteredDatabases.filter(db => db.cloud === cloudFilter);

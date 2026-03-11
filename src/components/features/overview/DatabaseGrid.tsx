@@ -82,6 +82,7 @@ export function DatabaseGrid({ databases }: DatabaseGridProps) {
     const colors = {
       production: 'bg-purple-100 text-purple-800 border-purple-200',
       staging: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+      qa: 'bg-teal-100 text-teal-800 border-teal-200',
       development: 'bg-gray-100 text-gray-800 border-gray-200',
     };
     return colors[env as keyof typeof colors] || 'bg-gray-100 text-gray-800 border-gray-200';

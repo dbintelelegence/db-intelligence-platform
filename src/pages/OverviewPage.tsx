@@ -6,6 +6,7 @@ import { CloudProviderCard } from '@/components/features/overview/CloudProviderC
 import { aggregateDatabasesByCloud } from '@/utils/aggregation';
 import { useTimeRange, type TimeRangeOption } from '@/hooks/useTimeRange';
 import { formatCurrency } from '@/lib/formatters';
+import { useScoredDatabases } from '@/hooks/useScoredDatabases';
 
 const TIME_RANGE_OPTIONS: { value: TimeRangeOption; label: string }[] = [
   { value: '1h', label: 'Last 1 Hour' },
@@ -20,19 +21,22 @@ export function OverviewPage() {
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
 
+  // Apply scoring config to databases
+  const databases = useScoredDatabases(mockData.databases);
+
   // Calculate summary statistics
   const summary = useMemo(() => {
-    const totalDatabases = mockData.databases.length;
-    const healthyDatabases = mockData.databases.filter(
+    const totalDatabases = databases.length;
+    const healthyDatabases = databases.filter(
       db => db.healthStatus === 'excellent' || db.healthStatus === 'good'
     ).length;
-    const warningDatabases = mockData.databases.filter(
+    const warningDatabases = databases.filter(
       db => db.healthStatus === 'warning'
     ).length;
-    const criticalDatabases = mockData.databases.filter(
+    const criticalDatabases = databases.filter(
       db => db.healthStatus === 'critical'
     ).length;
-    const totalCost = mockData.databases.reduce(
+    const totalCost = databases.reduce(
       (sum, db) => sum + db.monthlyCost,
       0
     );
@@ -48,12 +52,12 @@ export function OverviewPage() {
       totalCost,
       activeIssues,
     };
-  }, []);
+  }, [databases]);
 
   // Aggregate databases by cloud and region
   const cloudAggregates = useMemo(() => {
-    return aggregateDatabasesByCloud(mockData.databases);
-  }, []);
+    return aggregateDatabasesByCloud(databases);
+  }, [databases]);
 
   // Count unique cloud providers
   const cloudProviderCount = cloudAggregates.length;
@@ -136,7 +140,7 @@ export function OverviewPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold">All Databases ({summary.totalDatabases})</h2>
         </div>
-        <DatabaseGrid databases={mockData.databases} />
+        <DatabaseGrid databases={databases} />
       </div>
     </div>
   );

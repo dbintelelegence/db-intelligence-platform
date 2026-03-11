@@ -1,6 +1,6 @@
 export type DatabaseType = 'postgres' | 'mysql' | 'mongodb' | 'redis' | 'dynamodb' | 'aurora' | 'elasticsearch';
 export type CloudProvider = 'aws' | 'gcp' | 'azure';
-export type Environment = 'production' | 'staging' | 'development';
+export type Environment = 'production' | 'staging' | 'qa' | 'development';
 export type HealthStatus = 'excellent' | 'good' | 'warning' | 'critical' | 'unknown';
 export type Trend = 'up' | 'down' | 'stable';
 
@@ -29,6 +29,9 @@ export interface Database {
 
   // Metrics
   metrics: CurrentDatabaseMetrics;
+
+  // Type-specific metrics (e.g., replication lag for Postgres, shard balance for ES)
+  typeSpecificMetrics?: Record<string, number>;
 
   // Counts
   activeIssues: number;

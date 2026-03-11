@@ -5,6 +5,7 @@ export * from './issues';
 export * from './billing';
 export * from './summarization';
 export * from './alerts';
+export * from './health-scoring';
 
 // Utility types
 export interface FilterOptions {

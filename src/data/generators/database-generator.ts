@@ -1,9 +1,10 @@
-import type { Database, DatabaseType, CloudProvider, Environment, Trend } from '@/types';
+import type { Database, DatabaseType, CloudProvider, Environment, Trend, EnvironmentScoringConfigurations } from '@/types';
 import { getHealthStatus } from '@/constants/health-thresholds';
+import { computeHealthScore } from '@/lib/health-scoring';
 
 const DATABASE_TYPES: DatabaseType[] = ['postgres', 'mysql', 'mongodb', 'redis', 'dynamodb', 'aurora', 'elasticsearch'];
 const CLOUD_PROVIDERS: CloudProvider[] = ['aws', 'gcp', 'azure'];
-const ENVIRONMENTS: Environment[] = ['production', 'staging', 'development'];
+const ENVIRONMENTS: Environment[] = ['production', 'staging', 'qa', 'development'];
 
 const AWS_REGIONS = ['us-east-1', 'us-west-2', 'eu-west-1', 'ap-southeast-1'];
 const GCP_REGIONS = ['us-central1', 'europe-west1', 'asia-east1'];
@@ -34,54 +35,60 @@ function weightedChoice<T>(array: T[], weights: number[]): T {
   return array[array.length - 1];
 }
 
-function generateHealthScore(): number {
-  const random = Math.random();
-
-  // 60% healthy (85-100)
-  if (random < 0.6) {
-    return randomInt(85, 100);
-  }
-  // 25% warning (70-84)
-  else if (random < 0.85) {
-    return randomInt(70, 84);
-  }
-  // 10% critical (40-69)
-  else if (random < 0.95) {
-    return randomInt(40, 69);
-  }
-  // 5% unknown
-  else {
-    return -1;
-  }
-}
-
 function generateTrend(healthScore: number): Trend {
   if (healthScore >= 90) {
-    // Healthy databases are more likely to be stable or improving
     return weightedChoice<Trend>(['up', 'down', 'stable'], [0.2, 0.1, 0.7]);
   } else if (healthScore >= 70) {
-    // Warning databases have mixed trends
     return weightedChoice<Trend>(['up', 'down', 'stable'], [0.3, 0.3, 0.4]);
   } else {
-    // Critical databases are more likely to be declining
     return weightedChoice<Trend>(['up', 'down', 'stable'], [0.2, 0.5, 0.3]);
   }
 }
 
-function generateMetrics(healthScore: number) {
-  // Base metrics on health score
-  const isCritical = healthScore < 70;
-  const isWarning = healthScore >= 70 && healthScore < 85;
+/**
+ * Generate metrics independently — broad ranges, not correlated to a pre-determined health score.
+ */
+function generateMetrics() {
+  const maxConnections = randomChoice([100, 200, 500]);
 
   return {
-    cpu: isCritical ? randomInt(80, 98) : isWarning ? randomInt(60, 79) : randomInt(20, 59),
-    memory: isCritical ? randomInt(85, 98) : isWarning ? randomInt(65, 84) : randomInt(30, 64),
-    storage: isCritical ? randomInt(80, 95) : isWarning ? randomInt(65, 79) : randomInt(40, 64),
-    connections: isCritical ? randomInt(90, 100) : isWarning ? randomInt(60, 89) : randomInt(20, 59),
-    maxConnections: 100,
-    latency: isCritical ? randomInt(100, 500) : isWarning ? randomInt(50, 99) : randomInt(10, 49),
-    throughput: isCritical ? randomInt(50, 200) : isWarning ? randomInt(200, 500) : randomInt(500, 2000),
+    cpu: randomInt(15, 98),
+    memory: randomInt(20, 98),
+    storage: randomInt(25, 95),
+    connections: randomInt(5, maxConnections),
+    maxConnections,
+    latency: randomInt(5, 500),
+    throughput: randomInt(50, 2500),
   };
+}
+
+/**
+ * Generate type-specific metrics for each database type.
+ */
+function generateTypeSpecificMetrics(dbType: DatabaseType): Record<string, number> {
+  switch (dbType) {
+    case 'postgres':
+      // Replication lag in seconds: mostly low, sometimes high
+      return { replicationLag: Math.random() < 0.8 ? randomInt(0, 5) : randomInt(5, 120) };
+    case 'mysql':
+      // Slow query ratio: percentage of slow queries
+      return { slowQueryRatio: Math.random() < 0.7 ? randomInt(0, 5) : randomInt(5, 30) };
+    case 'mongodb':
+      // Lock contention: percentage of time waiting on locks
+      return { lockContention: Math.random() < 0.75 ? randomInt(0, 10) : randomInt(10, 40) };
+    case 'redis':
+      // Eviction rate: evictions per second
+      return { evictionRate: Math.random() < 0.7 ? randomInt(0, 50) : randomInt(50, 1000) };
+    case 'dynamodb':
+      // Throttled request percentage
+      return { throttledRequests: Math.random() < 0.8 ? Math.round(Math.random() * 2 * 10) / 10 : randomInt(2, 20) };
+    case 'aurora':
+      // Buffer cache hit ratio (higher is better, typically 90-100%)
+      return { bufferCacheHitRatio: Math.random() < 0.7 ? randomInt(95, 100) : randomInt(70, 95) };
+    case 'elasticsearch':
+      // Shard balance: how evenly shards are distributed (0-100%, 100=perfect)
+      return { shardBalance: Math.random() < 0.6 ? randomInt(75, 100) : randomInt(30, 75) };
+  }
 }
 
 function generateIssueCount(healthScore: number): number {
@@ -98,7 +105,6 @@ function generateIssueCount(healthScore: number): number {
 function generateCost(dbType: DatabaseType, cloud: CloudProvider, environment: Environment): number {
   let baseCost = 100;
 
-  // Type multiplier
   const typeMultiplier: Record<DatabaseType, number> = {
     postgres: 1.2,
     mysql: 1.0,
@@ -109,22 +115,21 @@ function generateCost(dbType: DatabaseType, cloud: CloudProvider, environment: E
     elasticsearch: 1.4,
   };
 
-  // Cloud multiplier
   const cloudMultiplier: Record<CloudProvider, number> = {
     aws: 1.0,
     gcp: 0.95,
     azure: 1.05,
   };
 
-  // Environment multiplier
   const envMultiplier: Record<Environment, number> = {
     production: 3.0,
     staging: 1.5,
+    qa: 1.0,
     development: 0.5,
   };
 
   const cost = baseCost * typeMultiplier[dbType] * cloudMultiplier[cloud] * envMultiplier[environment];
-  const variation = cost * (Math.random() * 0.4 - 0.2); // ±20% variation
+  const variation = cost * (Math.random() * 0.4 - 0.2);
 
   return Math.round((cost + variation) * 100) / 100;
 }
@@ -166,15 +171,35 @@ function generateRecentTimestamp(minutesAgo: number = 5): Date {
   return new Date(now.getTime() - minutesAgo * 60 * 1000);
 }
 
-export function generateDatabases(count: number = 50): Database[] {
+export function generateDatabases(count: number = 50, scoringConfigs?: EnvironmentScoringConfigurations): Database[] {
   const databases: Database[] = [];
 
   for (let i = 0; i < count; i++) {
     const cloud = randomChoice(CLOUD_PROVIDERS);
     const dbType = randomChoice(DATABASE_TYPES);
-    const environment = weightedChoice(ENVIRONMENTS, [0.4, 0.3, 0.3]); // More prod databases
-    const healthScore = generateHealthScore();
-    const healthStatus = healthScore >= 0 ? getHealthStatus(healthScore) : 'unknown';
+    const environment = weightedChoice(ENVIRONMENTS, [0.35, 0.25, 0.15, 0.25]);
+    const metrics = generateMetrics();
+    const typeSpecificMetrics = generateTypeSpecificMetrics(dbType);
+
+    // ~5% chance of unknown health
+    const isUnknown = Math.random() < 0.05;
+
+    let healthScore: number;
+    let healthStatus: Database['healthStatus'];
+
+    if (isUnknown) {
+      healthScore = -1;
+      healthStatus = 'unknown';
+    } else if (scoringConfigs) {
+      const envConfig = scoringConfigs[environment];
+      const breakdown = computeHealthScore(metrics, dbType, envConfig, typeSpecificMetrics);
+      healthScore = breakdown.overallScore;
+      healthStatus = getHealthStatus(healthScore);
+    } else {
+      // Fallback: simple average if no config provided
+      healthScore = 75;
+      healthStatus = getHealthStatus(healthScore);
+    }
 
     databases.push({
       id: `db-${Math.random().toString(16).slice(2, 8)}`,
@@ -186,7 +211,8 @@ export function generateDatabases(count: number = 50): Database[] {
       healthScore,
       healthStatus,
       healthTrend: generateTrend(healthScore),
-      metrics: generateMetrics(healthScore),
+      metrics,
+      typeSpecificMetrics,
       activeIssues: generateIssueCount(healthScore),
       recentChanges: randomInt(0, 5),
       monthlyCost: generateCost(dbType, cloud, environment),
