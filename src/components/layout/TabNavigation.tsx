@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Database, AlertTriangle, DollarSign, Bell, Cloud, Server, ChevronDown, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, Database, AlertTriangle, DollarSign, Bell, Cloud, Server, ChevronDown, ChevronRight, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { mockData } from '@/data/mock-data';
 import { useState } from 'react';
@@ -42,6 +42,11 @@ export function TabNavigation() {
       name: 'Billing & Cost',
       path: '/billing',
       icon: DollarSign,
+    },
+    {
+      name: 'Settings',
+      path: '/settings',
+      icon: Settings,
     },
   ];
 

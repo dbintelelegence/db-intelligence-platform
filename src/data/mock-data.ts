@@ -7,9 +7,11 @@ import {
   generateCostTimeSeries,
 } from './generators/billing-generator';
 import { generateAlerts } from './generators/alert-generator';
+import { loadEnvScoringConfigurations } from '@/constants/health-scoring-defaults';
 
-// Generate all mock data once
-const databases = generateDatabases(50);
+// Load scoring configs and generate mock data with computed health scores
+const scoringConfigs = loadEnvScoringConfigurations();
+const databases = generateDatabases(50, scoringConfigs);
 const issues = generateIssues(databases);
 const costs = generateDatabaseCosts(databases);
 const anomalies = generateCostAnomalies(databases, costs);

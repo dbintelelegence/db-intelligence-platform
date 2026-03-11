@@ -2,6 +2,8 @@ import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTimeRange } from '@/hooks/useTimeRange';
 import { getDatabaseById } from '@/data/mock-data';
+import { useScoringConfig } from '@/hooks/useScoringConfig';
+import { recalculateDatabaseHealth } from '@/lib/health-scoring';
 import { DatabaseHeader } from '@/components/features/database-detail/DatabaseHeader';
 import { DatabaseSummaryCards } from '@/components/features/database-detail/DatabaseSummaryCards';
 import { TabNavigation } from '@/components/features/database-detail/TabNavigation';
@@ -19,10 +21,15 @@ export function DatabaseDetailPage() {
   const [activeTab, setActiveTab] = useState<'overview' | 'metrics' | 'issues' | 'cost'>('overview');
   const { timeRange, setTimeRange } = useTimeRange('24h');
 
+  const { getConfigForEnv } = useScoringConfig();
+
   const database = useMemo(() => {
     if (!id) return null;
-    return getDatabaseById(id);
-  }, [id]);
+    const db = getDatabaseById(id);
+    if (!db) return null;
+    const config = getConfigForEnv(db.environment);
+    return recalculateDatabaseHealth(db, config);
+  }, [id, getConfigForEnv]);
 
   if (!database) {
     return (

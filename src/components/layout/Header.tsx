@@ -39,7 +39,7 @@ export function Header() {
             className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 transition-all shadow-sm hover:shadow-md"
           >
             <Sparkles className="h-4 w-4" />
-            <span className="text-sm font-medium">AI Insights</span>
+            <span className="text-sm font-medium">Talk to your databases…</span>
           </button>
 
           {/* Theme Toggle - Day/Night */}

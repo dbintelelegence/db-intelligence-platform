@@ -57,6 +57,11 @@ export const ENVIRONMENT_COLORS = {
     text: 'text-yellow-800',
     badge: 'bg-yellow-600 text-white',
   },
+  qa: {
+    bg: 'bg-teal-100',
+    text: 'text-teal-800',
+    badge: 'bg-teal-600 text-white',
+  },
   development: {
     bg: 'bg-gray-100',
     text: 'text-gray-800',

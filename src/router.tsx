@@ -6,6 +6,7 @@ import { DatabaseDetailPage } from './pages/DatabaseDetailPage';
 import { IssuesPage } from './pages/IssuesPage';
 import { BillingPage } from './pages/BillingPage';
 import { AlertsPage } from './pages/AlertsPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 export const router = createBrowserRouter([
   {
@@ -35,6 +36,10 @@ export const router = createBrowserRouter([
       {
         path: 'alerts',
         element: <AlertsPage />,
+      },
+      {
+        path: 'settings',
+        element: <SettingsPage />,
       },
     ],
   },
