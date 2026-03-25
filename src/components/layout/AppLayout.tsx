@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom';
 import { Header } from './Header';
 import { TabNavigation } from './TabNavigation';
+import { CommandPalette } from './CommandPalette';
 
 export function AppLayout() {
   return (
@@ -14,6 +15,7 @@ export function AppLayout() {
           </div>
         </main>
       </div>
+      <CommandPalette />
     </div>
   );
 }
