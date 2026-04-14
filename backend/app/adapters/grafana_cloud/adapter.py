@@ -73,19 +73,16 @@ LABEL_FILTERS: dict[str, dict[str, str]] = {
 }
 
 # Derived metrics: canonical_name -> (numerator_canonical, denominator_canonical, multiplier)
-DERIVED_METRICS: dict[str, tuple[str, str, float]] = {
-    "jvm.heap.used.percent": ("jvm.heap.used.bytes", "jvm.heap.max.bytes", 100.0),
-}
+# Note: jvm.heap.used.percent moved to CUSTOM_QUERIES for per-node PromQL support.
+DERIVED_METRICS: dict[str, tuple[str, str, float]] = {}
 
 # Metrics that Grafana Cloud pre-aggregates and require an explicit aggregation
 # function in the query, otherwise return HTTP 422.
 # Format: canonical_name -> "aggfn by (label,...)"
 REQUIRED_AGGREGATION: dict[str, str] = {
-    "thread_pool.write.rejected": "max by (lp_cluster)",
-    "thread_pool.write.queue":    "max by (lp_cluster)",
-    "thread_pool.write.active":   "max by (lp_cluster)",
     # max across nodes: 1 = cluster is green, 0 = not green
-    "cluster.health.status":      "max by (lp_cluster)",
+    "cluster.health.status": "max by (lp_cluster)",
+    # thread_pool and jvm metrics are now in CUSTOM_QUERIES — no aggregation needed here
 }
 
 # Custom PromQL templates for metrics that can't be expressed as a simple
@@ -94,14 +91,44 @@ REQUIRED_AGGREGATION: dict[str, str] = {
 # averages across instances after substitution.
 CUSTOM_QUERIES: dict[str, str] = {
     # CPU % used = 100 - avg idle rate per instance, then averaged across cluster.
-    # node_cpu_seconds_total{mode="idle"} is a counter; rate() gives idle fraction.
-    # Multiplied by 100 to get percentage. Averaged across all cores per instance.
     "os.cpu.percent": (
         'avg by (instance) ('
         '  (1 - avg by (instance, cpu) ('
         '    rate(node_cpu_seconds_total{{mode="idle",{sel}}}[5m])'
         '  )) * 100'
         ')'
+    ),
+    # JVM heap % per node — returns one series per ES node (instance label).
+    # Computed server-side so we get accurate per-node ratios.
+    # Raw metric names have elasticsearch_ prefix (Prometheus ES exporter convention).
+    # ES nodes use the `instance` label (hostname e.g. lpggce-a-elsshrd7-usea1-1).
+    # jvm_memory_used/max_bytes can be queried bare — no pre-aggregation restriction.
+    "jvm.heap.used.percent": (
+        'avg by (instance, lp_cluster) (elasticsearch_jvm_memory_used_bytes{{area="heap",{sel}}}) '
+        '/ avg by (instance, lp_cluster) (elasticsearch_jvm_memory_max_bytes{{area="heap",{sel}}}) '
+        '* 100'
+    ),
+    # GC old-gen seconds per node — cumulative counter, can be queried bare.
+    "gc.old.collection.seconds": (
+        'avg by (instance, lp_cluster) (elasticsearch_jvm_gc_collection_seconds_sum{{gc="old",{sel}}})'
+    ),
+    # GC old-gen count per node — cumulative counter, can be queried bare.
+    "gc.old.collection.count": (
+        'avg by (instance, lp_cluster) (elasticsearch_jvm_gc_collection_seconds_count{{gc="old",{sel}}})'
+    ),
+    # Write thread pool rejected per node.
+    # IMPORTANT: Grafana Cloud pre-aggregates thread pool metrics (host: <aggregated>).
+    # Must use explicit aggregation or query fails. Type is "write" (not "bulk") on ES7+.
+    "thread_pool.write.rejected": (
+        'max by (instance, lp_cluster) (elasticsearch_thread_pool_rejected_count{{type="write",{sel}}})'
+    ),
+    # Write thread pool queue depth per node.
+    "thread_pool.write.queue": (
+        'max by (instance, lp_cluster) (elasticsearch_thread_pool_queue_count{{type="write",{sel}}})'
+    ),
+    # Write thread pool active threads per node.
+    "thread_pool.write.active": (
+        'max by (instance, lp_cluster) (elasticsearch_thread_pool_active_count{{type="write",{sel}}})'
     ),
 }
 

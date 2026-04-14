@@ -22,10 +22,10 @@ Layer 3 (stacks, adapters) is never exposed. The frontend sees only:
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,7 +33,7 @@ from sqlalchemy.orm import selectinload
 from app.adapters.grafana_cloud.adapter import GrafanaCloudAdapter
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.models import Cluster, Verdict, HealthStatus
+from app.models.models import Cluster, Stack, Tenant, Verdict, HealthStatus
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -142,6 +142,15 @@ def _cluster_to_database(
             "throughput":     round(throughput, 1),
         }
 
+    # Verdict age — how long ago the most recent analyzer run completed.
+    # None if no verdicts exist yet (cluster was never analyzed).
+    last_run_at = latest_verdicts[0].run_at if latest_verdicts else None
+    now_utc = datetime.now(timezone.utc)
+    verdict_age_seconds = int((now_utc - last_run_at).total_seconds()) if last_run_at else None
+
+    # Stale if last run was more than 30 minutes ago — analyzer may not be running
+    is_stale = verdict_age_seconds is not None and verdict_age_seconds > 1800
+
     return {
         "id": str(cluster.id),             # UUID — safe for use as URL route param
         "name": cluster.display_name,
@@ -158,12 +167,10 @@ def _cluster_to_database(
         "recentChanges": 0,
         "monthlyCost": 0,
         "costTrend": "stable",
-        "createdAt": cluster.created_at.isoformat() if cluster.created_at else datetime.now(timezone.utc).isoformat(),
-        "lastChecked": (
-            latest_verdicts[0].run_at.isoformat()
-            if latest_verdicts else
-            datetime.now(timezone.utc).isoformat()
-        ),
+        "createdAt": cluster.created_at.isoformat() if cluster.created_at else now_utc.isoformat(),
+        "lastChecked": last_run_at.isoformat() if last_run_at else None,
+        "verdictAgeSeconds": verdict_age_seconds,
+        "isStale": is_stale,
         "tags": {},
     }
 
@@ -267,15 +274,48 @@ _MYSQL_LIVE_METRICS = [
 ]
 
 
+async def _resolve_tenant_id(db: AsyncSession, x_tenant_id: str | None) -> uuid.UUID | None:
+    """
+    Resolve the tenant UUID from the X-Tenant-ID header.
+    Falls back to the single prototype tenant when no header is provided,
+    so existing single-tenant deployments work without any header.
+    Returns None only when an explicit header is provided but not found.
+    """
+    if x_tenant_id:
+        try:
+            return uuid.UUID(x_tenant_id)
+        except ValueError:
+            return None
+
+    # Fallback: use the first (prototype) tenant
+    row = (await db.execute(select(Tenant).limit(1))).scalar_one_or_none()
+    return row.id if row else None
+
+
 @router.get("/summary")
-async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def dashboard_summary(
+    db: AsyncSession = Depends(get_db),
+    x_tenant_id: str | None = Header(default=None),
+) -> dict[str, Any]:
     """
     Single endpoint for the dashboard. Returns:
       - clusters: Database[] shaped for the frontend with live Grafana metrics
       - issues:   Issue[] shaped for the frontend (non-healthy verdicts only)
+
+    Tenant isolation: clusters are scoped to the tenant resolved from
+    X-Tenant-ID header. Falls back to the prototype tenant when not provided.
     """
-    # Load all clusters
-    cluster_stmt = select(Cluster).order_by(Cluster.current_status, Cluster.display_name)
+    tenant_id = await _resolve_tenant_id(db, x_tenant_id)
+    if tenant_id is None:
+        return {"clusters": [], "issues": []}
+
+    # Load clusters scoped to this tenant via stack_id → stacks.tenant_id
+    cluster_stmt = (
+        select(Cluster)
+        .join(Stack, Cluster.stack_id == Stack.id)
+        .where(Stack.tenant_id == tenant_id)
+        .order_by(Cluster.current_status, Cluster.display_name)
+    )
     clusters = (await db.execute(cluster_stmt)).scalars().all()
 
     if not clusters:
@@ -284,7 +324,12 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any
     all_cluster_uuids = [c.id for c in clusters]
 
     # Latest verdict per (analyzer, instance) per cluster.
-    # instance_id is None for cluster-level verdicts and a host string for per-instance ones.
+    # instance_id is None for cluster-level verdicts and a hostname string for per-instance ones.
+    #
+    # Migration guard: when an analyzer transitions from cluster-level (instance_id=NULL) to
+    # per-instance verdicts, old NULL rows linger in the DB. Suppress cluster-level (NULL)
+    # verdicts for any analyzer that already has per-instance verdicts in the same cluster.
+    # This prevents stale cluster-level verdicts from showing alongside correct per-instance ones.
     latest_subq = (
         select(
             Verdict.cluster_id,
@@ -297,6 +342,20 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any
         .subquery()
     )
 
+    # Sub-select: which (cluster_id, analyzer_name) pairs have any per-instance verdicts?
+    has_instance_subq = (
+        select(
+            Verdict.cluster_id,
+            Verdict.analyzer_name,
+        )
+        .where(
+            Verdict.cluster_id.in_(all_cluster_uuids),
+            Verdict.instance_id.is_not(None),
+        )
+        .distinct()
+        .subquery()
+    )
+
     verdict_stmt = (
         select(Verdict)
         .join(
@@ -304,9 +363,22 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any
             and_(
                 Verdict.cluster_id == latest_subq.c.cluster_id,
                 Verdict.analyzer_name == latest_subq.c.analyzer_name,
-                Verdict.instance_id == latest_subq.c.instance_id,
+                # NULL-safe comparison required — plain == fails when both sides are NULL.
+                Verdict.instance_id.is_not_distinct_from(latest_subq.c.instance_id),
                 Verdict.run_at == latest_subq.c.max_run_at,
             ),
+        )
+        # Exclude stale cluster-level (NULL instance_id) verdicts when per-instance ones exist
+        .outerjoin(
+            has_instance_subq,
+            and_(
+                Verdict.cluster_id == has_instance_subq.c.cluster_id,
+                Verdict.analyzer_name == has_instance_subq.c.analyzer_name,
+            ),
+        )
+        .where(
+            # Keep verdict if: it has a real instance_id, OR no per-instance verdicts exist for this analyzer
+            (Verdict.instance_id.is_not(None)) | (has_instance_subq.c.cluster_id.is_(None))
         )
         .options(
             selectinload(Verdict.evidence),

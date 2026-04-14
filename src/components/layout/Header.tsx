@@ -1,16 +1,15 @@
 import { Database, Bell, User, Sun, Moon, Sparkles, Search } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
-import { SummarizationPanel } from '@/components/features/summarization/SummarizationPanel';
 import { AlertsDropdown } from './AlertsDropdown';
-import { mockData } from '@/data/mock-data';
 import { useState } from 'react';
 
-export function Header() {
-  const { theme, toggleTheme } = useTheme();
-  const [showSummarization, setShowSummarization] = useState(false);
-  const [showAlerts, setShowAlerts] = useState(false);
+interface HeaderProps {
+  onOpenAI: () => void;
+}
 
-  const unreadCount = mockData.alerts.filter((a) => a.status === 'unread').length;
+export function Header({ onOpenAI }: HeaderProps) {
+  const { theme, toggleTheme } = useTheme();
+  const [showAlerts, setShowAlerts] = useState(false);
 
   // Open command palette programmatically when search bar is clicked
   const openPalette = () => {
@@ -44,9 +43,9 @@ export function Header() {
 
         {/* Right actions */}
         <div className="flex items-center gap-1 flex-shrink-0">
-          {/* AI assistant */}
+          {/* AI assistant — opens right-side drawer via parent */}
           <button
-            onClick={() => setShowSummarization(true)}
+            onClick={onOpenAI}
             className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-sm font-medium"
           >
             <Sparkles className="h-3.5 w-3.5" />
@@ -69,12 +68,6 @@ export function Header() {
               className="relative rounded-lg p-2 hover:bg-accent transition-colors"
             >
               <Bell className="h-4 w-4" />
-              {unreadCount > 0 && (
-                <span className="absolute top-1 right-1 flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
-                </span>
-              )}
             </button>
             {showAlerts && <AlertsDropdown onClose={() => setShowAlerts(false)} />}
           </div>
@@ -87,10 +80,6 @@ export function Header() {
           </button>
         </div>
       </div>
-
-      {showSummarization && (
-        <SummarizationPanel onClose={() => setShowSummarization(false)} />
-      )}
     </header>
   );
 }

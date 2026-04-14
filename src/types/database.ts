@@ -38,11 +38,13 @@ export interface Database {
   recentChanges: number;
 
   // Cost
-  monthlyCost: number;      // USD
+  monthlyCost: number;  // 0 = not available (cost not wired up yet)
   costTrend: Trend;
 
   // Metadata
   createdAt: Date;
-  lastChecked: Date;
+  lastChecked: Date | null;         // null if cluster has never been analyzed
+  verdictAgeSeconds: number | null; // seconds since last analyzer run; null if never run
+  isStale: boolean;                 // true if last run was >30 min ago
   tags: Record<string, string>;
 }

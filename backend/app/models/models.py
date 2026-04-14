@@ -71,6 +71,7 @@ class EvidenceSourceType(str, enum.Enum):
 class SourceType(str, enum.Enum):
     grafana_cloud = "grafana_cloud"
     datadog = "datadog"
+    push = "push"                # customer pushes metrics to our ingest endpoint
 
 
 # ── tenants ───────────────────────────────────────────────────────────────────
@@ -529,3 +530,28 @@ class OnboardingSession(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped["Tenant"] = relationship(back_populates="onboarding_sessions")
+
+
+# ── ingest_tokens ─────────────────────────────────────────────────────────────
+
+class IngestToken(Base):
+    """
+    Bearer tokens issued to push-stack customers.
+    Raw token is shown once at creation and never stored.
+    Only SHA-256(raw_token) is persisted here.
+    """
+    __tablename__ = "ingest_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    stack_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stacks.id", ondelete="CASCADE"), nullable=False)
+    # SHA-256 hex digest of the raw token — never store plaintext
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    # Human label e.g. "prod-prometheus", "staging-otel"
+    label: Mapped[str | None] = mapped_column(String(128))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+    stack: Mapped["Stack"] = relationship()

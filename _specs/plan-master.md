@@ -64,6 +64,13 @@ entire database estate:
 - Phase 3+: PostgreSQL, MongoDB, Redis, Cassandra, Couchbase,
   Oracle, SQL Server
 
+## 1.1 Core Mantra.
+What this platform does is that when there is an issue the DBA oncall can login to this portal and look for what they need to check, this guides and potentially recommends a fix for the onging issue reducing the MTTR. 
+
+Customer can login to dashboard 
+  - look for a specific time period 
+  - Help me understand what is wrong with my cluster or node. 
+  - Product runs analyzers and provides insights on the data gathered either through push or pull based 
 ---
 
 ## 2. The one-line principle
@@ -390,7 +397,120 @@ For the prototype (one customer, Grafana Cloud, Elasticsearch):
 
 ---
 
-## 9. Onboarding flow
+## 9. Push vs Pull metric collection model
+
+### Overview
+
+The platform currently uses a **pull-based** model for all sources —
+the backend actively queries the customer's monitoring system on a
+schedule. A push-based model exists for future self-hosted or
+lightweight deployments where the customer sends metrics to us.
+
+### Pull-based (current model)
+
+```
+Customer monitoring system ←── Backend adapter (scheduled pull)
+  (Grafana Cloud, Datadog)          │
+                                    ▼
+                            Canonical metrics
+                                    │
+                                    ▼
+                          Baseline engine / Analyzers
+```
+
+**How it works:**
+- Adapter calls source system API on a cron schedule (e.g. every 5 min)
+- Adapter fetches latest values for each required canonical metric
+- Values are held in memory, passed to analyzers, then discarded
+- No raw metric values are stored
+
+**Source systems that support pull:**
+| Source | Protocol | Auth | Cluster identity |
+|--------|----------|------|-----------------|
+| Grafana Cloud | Prometheus HTTP API (GET/POST) | Basic auth (instance_id + API key) | lp_segment\|datacenter\|lp_cluster |
+| Datadog | Datadog Metrics API | API key + App key | tag-based |
+| Amazon CloudWatch | AWS SDK | IAM role or access key | namespace + dimension |
+| Google Cloud Monitoring | GCP API | Service account | resource labels |
+
+**Characteristics:**
+- Platform controls the pull interval — can tune freshness vs API quota
+- Source system is the authority — platform only reads
+- Requires outbound network access from backend to source API
+- Auth credentials stored in the stack config (api_key_ref → secret store)
+- Pre-aggregated metrics in Grafana Cloud require explicit PromQL aggregation (e.g. `max by (...)`) or queries fail
+
+**Current pull cadence:**
+- Analyzer runner: manual / cron (not yet automated in prototype)
+- Baseline seeder: manual, run once then on significant schema change
+
+---
+
+### Push-based (planned — not yet built)
+
+```
+Customer infrastructure ──► Ingest endpoint (our API)
+  (Prometheus, OTel,                │
+   custom exporters)                ▼
+                            Normalisation + store
+                                    │
+                                    ▼
+                          Baseline engine / Analyzers
+```
+
+**How it would work:**
+- Customer configures their exporter or collector to remote_write/push to our ingest endpoint
+- We receive raw metric samples, normalise via the normalisation map, derive canonical values
+- Canonical values trigger the analyzer pipeline in near-real-time
+
+**Source systems that would support push:**
+| Source | Protocol | Auth | Notes |
+|--------|----------|------|-------|
+| Prometheus remote_write | Protobuf over HTTPS | Bearer token | Most common self-hosted path |
+| OpenTelemetry Collector | OTLP gRPC or HTTP | mTLS or bearer | Cloud-native deployments |
+| Datadog Agent (forwarder) | Datadog wire protocol | API key | For customers migrating from Datadog |
+| Custom exporters | JSON or Prometheus text format | API key | Lightweight agents |
+
+**Why push matters:**
+- Works for air-gapped or private network environments (no outbound from backend)
+- Lower latency — metrics arrive as soon as scraped
+- Eliminates API quota concerns — customer controls export rate
+- Enables lightweight deployments: small agent, no monitoring platform needed
+
+**Constraints for push model (when built):**
+- Must still normalise via normalisation_map (same as pull)
+- Raw metric values must NOT be persisted — normalise then discard
+- Ingest endpoint must validate tenant and stack identity on every request
+- Rate limiting and back-pressure handling required at ingest layer
+
+---
+
+### Comparison matrix
+
+| Dimension | Pull | Push |
+|-----------|------|------|
+| Who initiates | Platform backend | Customer agent/exporter |
+| Network direction | Backend → Source | Customer → Platform |
+| Works air-gapped | No | Yes |
+| Latency | Pull interval (minutes) | Near-real-time (seconds) |
+| Requires monitoring platform | Yes | No |
+| API quota exposure | Yes | No (we control ingest) |
+| Customer setup complexity | Low (API key only) | Medium (configure exporter target) |
+| Auth surface | Source system credentials | Per-tenant ingest token |
+| Current status | **Built and running** | Planned — not built |
+| Prototype uses | Grafana Cloud (pull) | — |
+
+---
+
+### Decision rule for new source systems
+
+1. Does the customer already have a monitoring platform (Grafana, Datadog, CloudWatch)? → **Pull**
+2. Is the deployment air-gapped or private-network? → **Push**
+3. Does the customer want to minimise monitoring platform dependencies? → **Push**
+4. Is the customer running Prometheus locally (not cloud-managed)? → **Push via remote_write**
+
+---
+
+## 10. Onboarding flow
 
 ### Customer-facing steps
 
@@ -465,7 +585,7 @@ onboarding_sessions (
 
 ---
 
-## 10. Analyzer engine
+## 11. Analyzer engine
 
 ### Metric roles — three levels, not two
 
@@ -604,7 +724,7 @@ LLM explanation quality improves with each layer present.
 
 ---
 
-## 11. Full data model
+## 12. Full data model
 
 ### All tables
 
@@ -787,7 +907,7 @@ onboarding_sessions (
 
 ---
 
-## 12. Source adapters
+## 13. Source adapters
 
 ### Adapter interface (both source types implement this)
 
@@ -858,7 +978,7 @@ No data  → AdapterNoDataError     "No metrics found for cluster"
 
 ---
 
-## 13. Verdict writer
+## 14. Verdict writer
 
 The verdict writer is the bridge between the intelligence layer
 and the storage layer.
@@ -929,7 +1049,7 @@ def compute_freshness(metric_ts, run_at):
 
 ---
 
-## 14. Prototype build sequence
+## 15. Prototype build sequence
 
 Follow this order exactly. Do not skip steps. Do not work ahead.
 
@@ -1236,7 +1356,7 @@ cd backend && python -m pytest tests/ -v
 
 ---
 
-## 15. What is out of scope for this plan
+## 16. What is out of scope for this plan
 
 Do not build these. They have separate planning documents.
 
@@ -1252,7 +1372,7 @@ Do not build these. They have separate planning documents.
 
 ---
 
-## 16. Known risks
+## 17. Known risks
 
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
@@ -1265,7 +1385,7 @@ Do not build these. They have separate planning documents.
 
 ---
 
-## 17. File map — complete list
+## 18. File map — complete list
 
 ### New files this plan creates
 

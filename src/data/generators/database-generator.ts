@@ -219,6 +219,8 @@ export function generateDatabases(count: number = 50, scoringConfigs?: Environme
       costTrend: randomChoice<Trend>(['up', 'down', 'stable']),
       createdAt: generatePastDate(randomInt(30, 365)),
       lastChecked: generateRecentTimestamp(randomInt(1, 5)),
+      verdictAgeSeconds: randomInt(60, 600),
+      isStale: false,
       tags: generateTags(environment, dbType),
     });
   }

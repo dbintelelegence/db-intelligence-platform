@@ -107,7 +107,7 @@ export function DatabaseHeader({
 
           {/* Last Checked */}
           <p className="text-sm text-muted-foreground">
-            Last checked {formatDistanceToNow(database.lastChecked, { addSuffix: true })}
+            {database.lastChecked ? `Last checked ${formatDistanceToNow(database.lastChecked, { addSuffix: true })}` : 'Never analyzed'}
           </p>
         </div>
 

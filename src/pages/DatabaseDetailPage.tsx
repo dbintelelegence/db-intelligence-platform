@@ -336,7 +336,7 @@ export function DatabaseDetailPage() {
             {database.type} · {database.cloud.toUpperCase()} · {database.region} · {database.environment}
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Last checked {formatDistanceToNow(database.lastChecked, { addSuffix: true })}
+            {database.lastChecked ? `Last checked ${formatDistanceToNow(database.lastChecked, { addSuffix: true })}` : 'Never analyzed'}
           </p>
         </div>
 

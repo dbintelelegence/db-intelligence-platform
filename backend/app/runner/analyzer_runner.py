@@ -28,13 +28,17 @@ from datetime import datetime, timezone
 from sqlalchemy import select, and_, desc
 
 from app.adapters.grafana_cloud.adapter import GrafanaCloudAdapter
-from app.analyzers.elasticsearch.jvm_heap_pressure import JvmHeapPressureAnalyzer
+from app.analyzers.elasticsearch.jvm_heap_pressure import (
+    JvmHeapPressureAnalyzer, PER_INSTANCE_METRICS as JVM_PER_INSTANCE_METRICS,
+)
 from app.analyzers.elasticsearch.shard_allocation import ShardAllocationAnalyzer
-from app.analyzers.elasticsearch.thread_pool_saturation import ThreadPoolSaturationAnalyzer
+from app.analyzers.elasticsearch.thread_pool_saturation import (
+    ThreadPoolSaturationAnalyzer, PER_INSTANCE_METRICS as TP_PER_INSTANCE_METRICS,
+)
 from app.analyzers.mysql.connection_pool_saturation import ConnectionPoolSaturationAnalyzer
 from app.analyzers.mysql.replication_lag import ReplicationLagAnalyzer
 from app.analyzers.mysql.innodb_buffer_pool_pressure import (
-    InnodbBufferPoolPressureAnalyzer, PER_INSTANCE_METRICS,
+    InnodbBufferPoolPressureAnalyzer, PER_INSTANCE_METRICS as INNODB_PER_INSTANCE_METRICS,
 )
 from app.baseline.engine import WINDOW_ALL, get_baselines_for_cluster
 from app.core.config import get_settings
@@ -186,8 +190,130 @@ def _worst_status(*statuses: HealthStatus) -> HealthStatus:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+async def run_cluster_from_metrics(
+    db,
+    cluster_composite_id: str,
+    metrics: dict[str, float],
+    per_instance: dict[str, dict[str, float]],
+    run_at: datetime,
+) -> None:
+    """
+    Run a full analysis cycle given pre-fetched canonical metrics.
+    Used by both the push queue workers and the pull scheduler (via run_cluster()).
+    No adapter. No Grafana call. Pure intelligence pipeline:
+      resolve cluster → load baselines → run analyzers → write verdicts → update status.
+    """
+    logger.info(f"\n── Analyzing {cluster_composite_id} (metrics pre-fetched) ──")
+
+    # 1. Resolve composite string key → cluster ORM row
+    stmt = select(Cluster).where(Cluster.cluster_id == cluster_composite_id)
+    cluster = (await db.execute(stmt)).scalar_one_or_none()
+    if cluster is None:
+        logger.error(f"Cluster not found in DB: {cluster_composite_id}")
+        return
+    cluster_uuid = cluster.id
+
+    # 2. Select analyzers for this db_type
+    analyzers = ANALYZERS_BY_DB_TYPE.get(cluster.db_type, [])
+    if not analyzers:
+        logger.warning(f"  No analyzers registered for db_type={cluster.db_type} — skipping")
+        return
+
+    if not metrics:
+        logger.warning(f"No metrics provided for {cluster_composite_id} — skipping")
+        return
+    logger.info(f"  Metrics: {list(metrics.keys())}")
+
+    # 3. Load baselines
+    baselines = await get_baselines_for_cluster(db, cluster_composite_id, WINDOW_ALL)
+    logger.info(f"  Baselines: {len(baselines)} profiles")
+
+    log_signals: dict[str, int] = {}
+    all_statuses: list[HealthStatus] = []
+    any_skipped = False
+
+    # 4. Run analyzers
+    for analyzer in analyzers:
+        available = set(metrics.keys())
+        if not analyzer.can_run(available):
+            missing = set(analyzer.REQUIRED_METRICS) - available
+            logger.warning(f"  [{analyzer.ANALYZER_NAME}] Cannot run — missing: {missing}")
+            any_skipped = True
+            continue
+
+        # Use per_instance data if provided for analyzers that support it
+        analyzer_per_instance: dict | None = None
+        if per_instance and isinstance(analyzer, (JvmHeapPressureAnalyzer, ThreadPoolSaturationAnalyzer, InnodbBufferPoolPressureAnalyzer)):
+            analyzer_per_instance = per_instance
+
+        analyze_kwargs = dict(
+            metrics=metrics,
+            baselines=baselines,
+            log_signals=log_signals,
+            metric_ts=run_at,
+        )
+        if analyzer_per_instance is not None:
+            analyze_kwargs["per_instance_metrics"] = analyzer_per_instance
+
+        raw = analyzer.analyze(**analyze_kwargs)
+
+        # Analyzers may return a single VerdictResult or a list (per-instance)
+        results = raw if isinstance(raw, list) else [raw]
+
+        for result in results:
+            instance_label = f" [{result.instance_id}]" if result.instance_id else ""
+            prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME, result.instance_id)
+            verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
+
+            status_changed = prev_status != result.status
+            logger.info(
+                f"  [{analyzer.ANALYZER_NAME}]{instance_label} "
+                f"status={result.status.value}  confidence={result.confidence.value}  "
+                f"prev={prev_status.value if prev_status else 'none'}  "
+                f"changed={'YES' if status_changed else 'no'}"
+            )
+
+            # Call LLM only on meaningful transitions
+            is_meaningful_change = status_changed and (
+                result.status in (HealthStatus.degraded, HealthStatus.critical)
+                or (prev_status in (HealthStatus.degraded, HealthStatus.critical) and result.status == HealthStatus.healthy)
+            )
+
+            if is_meaningful_change:
+                prev_label = prev_status.value if prev_status else "none"
+                trigger = f"status changed from {prev_label} to {result.status.value}"
+                await generate_explanation(
+                    db=db,
+                    verdict_id=verdict.id,
+                    result=result,
+                    prev_status=prev_status,
+                    cluster_display_name=cluster.display_name,
+                    trigger_reason=trigger,
+                )
+
+            all_statuses.append(result.status)
+
+    # 5. Update cluster status
+    if all_statuses:
+        worst = _worst_status(*all_statuses)
+        if any_skipped and worst == HealthStatus.healthy:
+            worst = HealthStatus.unknown
+            logger.warning(f"  Partial coverage (some analyzers skipped) — marking unknown instead of healthy")
+    else:
+        worst = HealthStatus.unknown
+        logger.warning(f"  No analyzers produced verdicts — marking cluster unknown")
+    await _update_cluster_status(db, cluster_uuid, worst)
+    logger.info(f"  Status → {worst.value}")
+
+    await db.commit()
+
+
 async def run_cluster(db, cluster_composite_id: str, run_at: datetime) -> None:
-    """Run a full analysis cycle for a single cluster."""
+    """
+    Pull path: fetch metrics from Grafana, then delegate to run_cluster_from_metrics().
+    Unchanged from callers' perspective. The per-instance fetch logic stays here
+    because it requires the adapter and is pull-specific.
+    """
     logger.info(f"\n── Analyzing {cluster_composite_id} ──")
 
     # 1. Resolve composite string key → UUID + db_type
@@ -196,7 +322,6 @@ async def run_cluster(db, cluster_composite_id: str, run_at: datetime) -> None:
     if cluster is None:
         logger.error(f"Cluster not found in DB: {cluster_composite_id}")
         return
-    cluster_uuid = cluster.id
 
     # 2. Select analyzers and build adapter for this db_type
     analyzers = ANALYZERS_BY_DB_TYPE.get(cluster.db_type, [])
@@ -219,7 +344,7 @@ async def run_cluster(db, cluster_composite_id: str, run_at: datetime) -> None:
         if hasattr(analyzer, "CORROBORATING_METRICS"):
             all_metrics_needed.update(analyzer.CORROBORATING_METRICS)
 
-    # 4. Fetch live metrics
+    # 4. Fetch cluster-level metrics
     metrics = await adapter.get_latest_metrics(
         cluster_id=cluster_composite_id,
         canonical_names=list(all_metrics_needed),
@@ -227,83 +352,74 @@ async def run_cluster(db, cluster_composite_id: str, run_at: datetime) -> None:
     if not metrics:
         logger.warning(f"No metrics returned for {cluster_composite_id} — skipping")
         return
-    logger.info(f"  Metrics: {list(metrics.keys())}")
 
-    # 5. Load baselines
-    baselines = await get_baselines_for_cluster(db, cluster_composite_id, WINDOW_ALL)
-    logger.info(f"  Baselines: {len(baselines)} profiles")
-
-    log_signals: dict[str, int] = {}
-    all_statuses: list[HealthStatus] = []
-
-    # 6. Run analyzers
+    # 5. Fetch per-instance metrics for analyzers that need them
+    per_instance: dict[str, dict[str, float]] = {}
     for analyzer in analyzers:
-        available = set(metrics.keys())
-        if not analyzer.can_run(available):
-            missing = set(analyzer.REQUIRED_METRICS) - available
-            logger.warning(f"  [{analyzer.ANALYZER_NAME}] Cannot run — missing: {missing}")
-            continue
-
-        # Per-instance analyzers get their data fetched separately
-        per_instance: dict | None = None
-        if isinstance(analyzer, InnodbBufferPoolPressureAnalyzer):
+        if isinstance(analyzer, JvmHeapPressureAnalyzer):
             try:
-                per_instance = await adapter.get_latest_metrics_per_instance(
+                per_instance.update(await adapter.get_latest_metrics_per_instance(
                     cluster_id=cluster_composite_id,
-                    canonical_names=PER_INSTANCE_METRICS,
-                )
-                logger.info(f"  [{analyzer.ANALYZER_NAME}] Per-instance data: {list(per_instance.keys())}")
+                    canonical_names=JVM_PER_INSTANCE_METRICS,
+                    instance_label="instance",
+                ))
             except Exception as e:
-                logger.warning(f"  [{analyzer.ANALYZER_NAME}] Per-instance fetch failed: {e} — falling back to cluster avg")
+                logger.warning(f"  [{analyzer.ANALYZER_NAME}] Per-node fetch failed: {e}")
+        elif isinstance(analyzer, ThreadPoolSaturationAnalyzer):
+            try:
+                per_instance.update(await adapter.get_latest_metrics_per_instance(
+                    cluster_id=cluster_composite_id,
+                    canonical_names=TP_PER_INSTANCE_METRICS,
+                    instance_label="instance",
+                ))
+            except Exception as e:
+                logger.warning(f"  [{analyzer.ANALYZER_NAME}] Per-node fetch failed: {e}")
+        elif isinstance(analyzer, InnodbBufferPoolPressureAnalyzer):
+            try:
+                per_instance.update(await adapter.get_latest_metrics_per_instance(
+                    cluster_id=cluster_composite_id,
+                    canonical_names=INNODB_PER_INSTANCE_METRICS,
+                ))
+            except Exception as e:
+                logger.warning(f"  [{analyzer.ANALYZER_NAME}] Per-instance fetch failed: {e}")
 
-        analyze_kwargs = dict(
-            metrics=metrics,
-            baselines=baselines,
-            log_signals=log_signals,
-            metric_ts=run_at,
-        )
-        if per_instance is not None:
-            analyze_kwargs["per_instance_metrics"] = per_instance
+    # 6. Run the intelligence pipeline with the fetched metrics
+    await run_cluster_from_metrics(db, cluster_composite_id, metrics, per_instance, run_at)
 
-        raw = analyzer.analyze(**analyze_kwargs)
 
-        # Analyzers may return a single VerdictResult or a list (per-instance)
-        results = raw if isinstance(raw, list) else [raw]
+async def run_all_active_clusters() -> None:
+    """
+    Fetch all active clusters from the DB and run a full analysis cycle.
+    Called by the scheduler every analyzer_run_interval_seconds.
+    No hardcoded cluster list — reads from the clusters table directly.
+    """
+    run_at = datetime.now(timezone.utc)
+    logger.info(f"\n══ Scheduler run starting at {run_at.isoformat()} ══")
 
-        for result in results:
-            instance_label = f" [{result.instance_id}]" if result.instance_id else ""
-            prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME, result.instance_id)
-            verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
+    async with AsyncSessionLocal() as db:
+        stmt = select(Cluster).where(Cluster.current_status.is_not(None))
+        clusters = (await db.execute(stmt)).scalars().all()
 
-            status_changed = prev_status != result.status
-            logger.info(
-                f"  [{analyzer.ANALYZER_NAME}]{instance_label} "
-                f"status={result.status.value}  confidence={result.confidence.value}  "
-                f"prev={prev_status.value if prev_status else 'none'}  "
-                f"changed={'YES' if status_changed else 'no'}"
-            )
+        if not clusters:
+            logger.warning("  No clusters found in DB — nothing to analyze")
+            return
 
-            if status_changed:
-                prev_label = prev_status.value if prev_status else "none"
-                trigger = f"status changed from {prev_label} to {result.status.value}"
-                await generate_explanation(
-                    db=db,
-                    verdict_id=verdict.id,
-                    result=result,
-                    prev_status=prev_status,
-                    cluster_display_name=cluster.display_name,
-                    trigger_reason=trigger,
-                )
+        supported_types = set(ANALYZERS_BY_DB_TYPE.keys())
+        runnable = [c for c in clusters if c.db_type in supported_types]
+        skipped  = [c for c in clusters if c.db_type not in supported_types]
 
-            all_statuses.append(result.status)
+        logger.info(f"  Clusters to analyze: {len(runnable)}")
+        if skipped:
+            logger.info(f"  Skipped (no analyzers): {[c.cluster_id for c in skipped]}")
 
-    # 6. Update cluster status
-    if all_statuses:
-        worst = _worst_status(*all_statuses)
-        await _update_cluster_status(db, cluster_uuid, worst)
-        logger.info(f"  Status → {worst.value}")
+        for cluster in runnable:
+            try:
+                await run_cluster(db, cluster.cluster_id, run_at)
+            except Exception as e:
+                # One cluster failing must not stop the rest
+                logger.error(f"  [{cluster.cluster_id}] Unhandled error: {e}", exc_info=True)
 
-    await db.commit()
+    logger.info(f"══ Scheduler run complete ══\n")
 
 
 async def run(cluster_ids: list[str]) -> None:

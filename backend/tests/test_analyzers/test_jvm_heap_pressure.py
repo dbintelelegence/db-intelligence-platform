@@ -51,7 +51,7 @@ class TestHealthyState:
             "gc.old.collection.seconds": 0.32,
             "gc.old.collection.count": 2.1,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result.status == HealthStatus.healthy
 
     def test_healthy_state_has_high_confidence(self):
@@ -60,7 +60,7 @@ class TestHealthyState:
             "gc.old.collection.seconds": 0.30,
             "gc.old.collection.count": 2.0,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result.confidence == ConfidenceLevel.high
 
     def test_healthy_has_no_recommendation_action(self):
@@ -69,7 +69,7 @@ class TestHealthyState:
             "gc.old.collection.seconds": 0.33,
             "gc.old.collection.count": 2.2,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert "no action" in result.recommendation.lower()
 
 
@@ -81,7 +81,7 @@ class TestDegradedState:
             "gc.old.collection.seconds": 0.35,
             "gc.old.collection.count": 2.3,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result.status == HealthStatus.degraded
 
     def test_elevated_gc_returns_degraded(self):
@@ -90,7 +90,7 @@ class TestDegradedState:
             "gc.old.collection.seconds": 0.55,  # 1.8x baseline p50 — elevated
             "gc.old.collection.count": 3.5,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result.status == HealthStatus.degraded
 
     def test_single_metric_anomaly_is_low_confidence(self):
@@ -100,7 +100,7 @@ class TestDegradedState:
             "gc.old.collection.seconds": 0.31,
             "gc.old.collection.count": 2.1,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         # Status degraded but confidence low since only one signal
         assert result.status in (HealthStatus.degraded, HealthStatus.critical)
         assert result.confidence == ConfidenceLevel.low
@@ -114,7 +114,7 @@ class TestCriticalState:
             "gc.old.collection.seconds": 1.2,  # 4x baseline p50=0.3
             "gc.old.collection.count": 8.0,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result.status == HealthStatus.critical
 
     def test_critical_has_fielddata_recommendation_when_log_present(self):
@@ -124,7 +124,7 @@ class TestCriticalState:
             "gc.old.collection.count": 10.0,
         }
         log_signals = {"fielddata_eviction": 47}
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)[0]
         assert "fielddata" in result.recommendation.lower()
 
     def test_critical_root_cause_mentions_aggregation(self):
@@ -133,7 +133,7 @@ class TestCriticalState:
             "gc.old.collection.seconds": 1.1,
             "gc.old.collection.count": 7.0,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert "aggregation" in result.root_cause.lower() or "fielddata" in result.root_cause.lower()
 
 
@@ -145,7 +145,7 @@ class TestConfidenceLevels:
             "gc.old.collection.seconds": 0.70,  # 2.3 sigma above mean
             "gc.old.collection.count": 4.0,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result.confidence == ConfidenceLevel.medium
 
     def test_fielddata_log_boosts_confidence_to_high(self):
@@ -155,7 +155,7 @@ class TestConfidenceLevels:
             "gc.old.collection.count": 4.0,
         }
         log_signals = {"fielddata_eviction": 12}
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)[0]
         assert result.confidence == ConfidenceLevel.high
 
     def test_gc_pause_log_boosts_confidence(self):
@@ -165,7 +165,7 @@ class TestConfidenceLevels:
             "gc.old.collection.count": 3.8,
         }
         log_signals = {"gc_pause": 8}
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)[0]
         # Should be medium or high, not low
         assert result.confidence != ConfidenceLevel.low
 
@@ -177,8 +177,8 @@ class TestConfidenceLevels:
             "gc.old.collection.count": 2.5,
         }
         log_signals = {"circuit_breaker_trip": 3}
-        result_with_cb = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)
-        result_without_cb = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result_with_cb = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)[0]
+        result_without_cb = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         assert result_with_cb.confidence == result_without_cb.confidence
 
 
@@ -191,9 +191,10 @@ class TestNoBaseline:
             "gc.old.collection.seconds": 1.2,
             "gc.old.collection.count": 8.0,
         }
-        result = analyzer.analyze(metrics, {}, {}, NOW)
-        assert result is not None
-        assert result.confidence == ConfidenceLevel.low
+        results = analyzer.analyze(metrics, {}, {}, NOW)
+        assert results is not None
+        assert len(results) > 0
+        assert results[0].confidence == ConfidenceLevel.low
 
     def test_no_baseline_summary_says_no_baseline(self):
         metrics = {
@@ -201,7 +202,7 @@ class TestNoBaseline:
             "gc.old.collection.seconds": 0.4,
             "gc.old.collection.count": 2.5,
         }
-        result = analyzer.analyze(metrics, {}, {}, NOW)
+        result = analyzer.analyze(metrics, {}, {}, NOW)[0]
         assert "no baseline" in result.baseline_summary.lower()
 
 
@@ -229,7 +230,7 @@ class TestEvidenceChain:
             "gc.old.collection.seconds": 0.9,
             "gc.old.collection.count": 6.0,
         }
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, {}, NOW)[0]
         metric_evidence = [e for e in result.evidence if e.source_type == "metric"]
         assert len(metric_evidence) >= 2
 
@@ -240,7 +241,7 @@ class TestEvidenceChain:
             "gc.old.collection.count": 6.0,
         }
         log_signals = {"fielddata_eviction": 23, "gc_pause": 5}
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)[0]
         log_evidence = [e for e in result.evidence if e.source_type == "log_signal"]
         assert len(log_evidence) == 2
 
@@ -251,7 +252,7 @@ class TestEvidenceChain:
             "gc.old.collection.count": 5.0,
         }
         log_signals = {"fielddata_eviction": 10}
-        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)
+        result = analyzer.analyze(metrics, NORMAL_BASELINES, log_signals, NOW)[0]
         fielddata_ev = next(
             (e for e in result.evidence if "fielddata_eviction" in e.text), None
         )

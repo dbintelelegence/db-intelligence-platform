@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     analyzer_run_interval_seconds: int = 300
     normalisation_cache_ttl_seconds: int = 300
 
+    # Push ingest workers — number of coroutines draining the analysis queue
+    push_worker_count: int = 3
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

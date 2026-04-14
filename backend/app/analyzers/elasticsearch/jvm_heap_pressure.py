@@ -1,12 +1,15 @@
 """
-Analyzer: JVM Heap Pressure (Elasticsearch)
+Analyzer: JVM Heap Pressure (Elasticsearch) — per-node
 
 Failure mode: JVM heap exhaustion driven by GC pressure.
 
-What it watches:
+JVM heap is per-node — each ES node has its own JVM. This analyzer writes one
+verdict per node so the dashboard can pinpoint exactly which node is under pressure.
+
+What it watches (per node via get_latest_metrics_per_instance):
   Metrics (required):
-    - jvm.heap.used.percent       — heap utilization percentage
-    - gc.old.collection.seconds   — time spent in old-gen GC per interval
+    - jvm.heap.used.percent       — heap utilization % for this node
+    - gc.old.collection.seconds   — time spent in old-gen GC
     - gc.old.collection.count     — number of old-gen GC events
 
   Log signals (optional, boost confidence):
@@ -28,13 +31,7 @@ Verdict logic:
   Healthy:
     - All metrics within baseline bounds
 
-Confidence:
-  Base: LOW if only one metric is anomalous
-  Base: MEDIUM if both heap and GC are anomalous
-  +1 level if fielddata_eviction log signal present
-  +1 level if gc_pause log signal corroborates
-  Maximum: HIGH
-  Minimum: LOW
+Returns list[VerdictResult] — one entry per ES node.
 """
 
 from datetime import datetime
@@ -43,6 +40,13 @@ from app.models.models import HealthStatus, ConfidenceLevel
 from app.core.config import get_settings
 
 settings = get_settings()
+
+# Metrics fetched per-node via get_latest_metrics_per_instance
+PER_INSTANCE_METRICS = [
+    "jvm.heap.used.percent",
+    "gc.old.collection.seconds",
+    "gc.old.collection.count",
+]
 
 
 class JvmHeapPressureAnalyzer(BaseAnalyzer):
@@ -67,18 +71,57 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
         baselines: dict,
         log_signals: dict[str, int],
         metric_ts: datetime,
+        per_instance_metrics: dict[str, dict[str, float]] | None = None,
+    ) -> list[VerdictResult]:
+        """
+        Returns one VerdictResult per ES node.
+        per_instance_metrics: {node_name: {canonical_name: value}}
+        Falls back to single cluster-level verdict if not provided.
+        """
+        if not per_instance_metrics:
+            return [self._analyze_node(
+                instance_id=None,
+                heap_pct=metrics["jvm.heap.used.percent"],
+                gc_seconds=metrics["gc.old.collection.seconds"],
+                gc_count=metrics["gc.old.collection.count"],
+                baselines=baselines,
+                log_signals=log_signals,
+                metric_ts=metric_ts,
+            )]
+
+        results = []
+        for node_id, node_metrics in per_instance_metrics.items():
+            heap_pct = node_metrics.get("jvm.heap.used.percent")
+            if heap_pct is None:
+                continue
+            results.append(self._analyze_node(
+                instance_id=node_id,
+                heap_pct=heap_pct,
+                gc_seconds=node_metrics.get("gc.old.collection.seconds", 0.0),
+                gc_count=node_metrics.get("gc.old.collection.count", 0.0),
+                baselines=baselines,
+                log_signals=log_signals,
+                metric_ts=metric_ts,
+            ))
+        return results
+
+    def _analyze_node(
+        self,
+        instance_id: str | None,
+        heap_pct: float,
+        gc_seconds: float,
+        gc_count: float,
+        baselines: dict,
+        log_signals: dict[str, int],
+        metric_ts: datetime,
     ) -> VerdictResult:
 
-        heap_pct = metrics["jvm.heap.used.percent"]
-        gc_seconds = metrics["gc.old.collection.seconds"]
-        gc_count = metrics["gc.old.collection.count"]
-
-        # ── Retrieve baselines ────────────────────────────────────────────────
         heap_baseline = baselines.get("jvm.heap.used.percent")
         gc_seconds_baseline = baselines.get("gc.old.collection.seconds")
         gc_count_baseline = baselines.get("gc.old.collection.count")
 
         evidence: list[EvidenceItem] = []
+        node_label = f" on {instance_id}" if instance_id else ""
 
         # ── Compute deviations ────────────────────────────────────────────────
         heap_sigma = 0.0
@@ -92,46 +135,41 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
             heap_sigma = (heap_pct - heap_baseline.mean) / heap_baseline.std_dev
             heap_vs_p95 = heap_pct > heap_baseline.p95
             heap_vs_p75 = heap_pct > heap_baseline.p75
-
-            pct_above_baseline = ((heap_pct - heap_baseline.p50) / heap_baseline.p50) * 100 if heap_baseline.p50 > 0 else 0
+            pct_above = ((heap_pct - heap_baseline.p50) / heap_baseline.p50) * 100 if heap_baseline.p50 > 0 else 0
             evidence.append(EvidenceItem(
-                text=f"jvm.heap.used.percent at {heap_pct:.1f}% vs baseline p50={heap_baseline.p50:.1f}%, p95={heap_baseline.p95:.1f}% ({pct_above_baseline:+.0f}% above median)",
+                text=f"jvm.heap.used.percent={heap_pct:.1f}% vs p50={heap_baseline.p50:.1f}% p95={heap_baseline.p95:.1f}% ({pct_above:+.0f}% above median){node_label}",
                 source_type="metric",
                 confidence_delta=0,
             ))
         else:
-            # No baseline — report raw value only, confidence will be LOW
             evidence.append(EvidenceItem(
-                text=f"jvm.heap.used.percent at {heap_pct:.1f}% (no baseline yet — cannot determine deviation)",
+                text=f"jvm.heap.used.percent={heap_pct:.1f}% (no baseline yet){node_label}",
                 source_type="metric",
                 confidence_delta=0,
             ))
 
         if gc_seconds_baseline and gc_seconds_baseline.std_dev > 0:
             gc_seconds_sigma = (gc_seconds - gc_seconds_baseline.mean) / gc_seconds_baseline.std_dev
-            gc_seconds_vs_baseline_ratio = gc_seconds / gc_seconds_baseline.p50 if gc_seconds_baseline.p50 > 0 else 1.0
-            gc_frequency_critical = gc_seconds_vs_baseline_ratio > 3.0
-            gc_frequency_elevated = gc_seconds_vs_baseline_ratio > 1.5
-
+            gc_ratio = gc_seconds / gc_seconds_baseline.p50 if gc_seconds_baseline.p50 > 0 else 1.0
+            gc_frequency_critical = gc_ratio > 3.0
+            gc_frequency_elevated = gc_ratio > 1.5
             evidence.append(EvidenceItem(
-                text=f"gc.old.collection.seconds at {gc_seconds:.2f}s vs baseline p50={gc_seconds_baseline.p50:.2f}s ({gc_seconds_vs_baseline_ratio:.1f}x baseline frequency)",
+                text=f"gc.old.collection.seconds={gc_seconds:.2f}s vs p50={gc_seconds_baseline.p50:.2f}s ({gc_ratio:.1f}x baseline){node_label}",
                 source_type="metric",
                 confidence_delta=0,
             ))
         else:
             evidence.append(EvidenceItem(
-                text=f"gc.old.collection.seconds at {gc_seconds:.2f}s (no baseline yet)",
+                text=f"gc.old.collection.seconds={gc_seconds:.2f}s (no baseline yet){node_label}",
                 source_type="metric",
                 confidence_delta=0,
             ))
 
-        # ── Determine status ──────────────────────────────────────────────────
-        # Critical conditions
+        # ── Status ────────────────────────────────────────────────────────────
         is_critical = (
             (heap_vs_p95 and gc_frequency_critical)
             or heap_sigma > settings.critical_sigma_threshold
         )
-        # Degraded conditions
         is_degraded = (
             heap_vs_p75
             or gc_frequency_elevated
@@ -146,28 +184,22 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
         else:
             status = HealthStatus.healthy
 
-        # ── Base confidence from metric corroboration ─────────────────────────
-        # No baseline at all → LOW regardless of status.
-        # Both baselines present and both metrics anomalous → MEDIUM.
-        # Both baselines present and healthy → HIGH.
-        # Only one metric anomalous → LOW.
+        # ── Confidence ────────────────────────────────────────────────────────
         has_baselines = heap_baseline is not None and gc_seconds_baseline is not None
-
-        both_metrics_anomalous = (
+        both_anomalous = (
             heap_sigma > settings.degraded_sigma_threshold
             and gc_seconds_sigma > settings.degraded_sigma_threshold
         )
-
         if not has_baselines:
-            confidence_level = 0  # LOW — cannot determine deviation without baseline
+            confidence_level = 0
         elif status == HealthStatus.healthy:
-            confidence_level = 2  # HIGH — both baselines present, nothing anomalous
-        elif both_metrics_anomalous:
-            confidence_level = 1  # MEDIUM — two metrics agree something is wrong
+            confidence_level = 2
+        elif both_anomalous:
+            confidence_level = 1
         else:
-            confidence_level = 0  # LOW — only one signal firing
+            confidence_level = 0
 
-        # ── Log signal corroboration ──────────────────────────────────────────
+        # ── Log signals ───────────────────────────────────────────────────────
         fielddata_count = log_signals.get("fielddata_eviction", 0)
         gc_pause_count = log_signals.get("gc_pause", 0)
         circuit_breaker_count = log_signals.get("circuit_breaker_trip", 0)
@@ -175,11 +207,10 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
         if fielddata_count > 0:
             confidence_level = min(confidence_level + 1, 2)
             evidence.append(EvidenceItem(
-                text=f"fielddata_eviction: {fielddata_count} events in window — confirms fielddata cache growth as driver",
+                text=f"fielddata_eviction: {fielddata_count} events — confirms fielddata cache growth",
                 source_type="log_signal",
                 confidence_delta=1,
             ))
-
         if gc_pause_count > 0:
             confidence_level = min(confidence_level + 1, 2)
             evidence.append(EvidenceItem(
@@ -187,7 +218,6 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
                 source_type="log_signal",
                 confidence_delta=1,
             ))
-
         if circuit_breaker_count > 0:
             evidence.append(EvidenceItem(
                 text=f"circuit_breaker_trip: {circuit_breaker_count} events — secondary effect of heap pressure",
@@ -198,23 +228,19 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
         confidence_map = {0: ConfidenceLevel.low, 1: ConfidenceLevel.medium, 2: ConfidenceLevel.high}
         confidence = confidence_map[confidence_level]
 
-        # ── Build human-readable fields ───────────────────────────────────────
+        # ── Human-readable fields ─────────────────────────────────────────────
         if status == HealthStatus.healthy:
-            observed = (
-                f"Heap at {heap_pct:.1f}% and GC frequency within normal bounds"
-            )
-            root_cause = "No heap pressure detected"
+            observed = f"Heap at {heap_pct:.1f}%, GC frequency within normal bounds{node_label}"
+            root_cause = f"No heap pressure detected{node_label}"
             recommendation = "No action required"
         else:
             gc_desc = f"every {60 / gc_count:.0f}s" if gc_count > 0 else "elevated"
-            observed = (
-                f"Heap at {heap_pct:.1f}%, GC old-gen running {gc_desc}"
-            )
+            observed = f"Heap at {heap_pct:.1f}%, GC old-gen running {gc_desc}{node_label}"
             root_cause = (
-                "Fielddata cache growth or large aggregation queries consuming heap. "
+                f"Fielddata cache growth or large aggregation queries consuming heap{node_label}. "
                 "GC cannot reclaim memory fast enough, causing cascading pressure."
                 if fielddata_count > 0
-                else "Heap consumption exceeding GC reclaim rate. "
+                else f"Heap consumption exceeding GC reclaim rate{node_label}. "
                      "Likely cause: fielddata cache growth, large aggregations, or mapping explosion."
             )
             recommendation = (
@@ -226,7 +252,7 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
         if heap_baseline:
             baseline_summary = (
                 f"Heap normally {heap_baseline.p50:.1f}–{heap_baseline.p95:.1f}% "
-                f"(p50–p95 over last 30 days)"
+                f"(p50–p95 over baseline window)"
             )
         else:
             baseline_summary = "No baseline established yet — requires 100+ samples"
@@ -241,4 +267,5 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
             confidence=confidence,
             evidence=evidence,
             metric_ts=metric_ts,
+            instance_id=instance_id,
         )

@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDashboard } from '@/hooks/useDashboard';
-import { formatCurrency } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
-import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, CheckCircle2, Search, RefreshCw } from 'lucide-react';
 import { IssueDetailPanel } from '@/components/features/issues/IssueDetailPanel';
 import type { Database, Issue } from '@/types';
 
@@ -35,18 +34,26 @@ function Chip({ children, variant }: { children: React.ReactNode; variant: 'red'
   );
 }
 
-// ── Stat strip (4 numbers at the top) ────────────────────────────────────────
+// ── Verdict age helper ────────────────────────────────────────────────────────
 
-function StatStrip({ total, healthy, warning, critical, cost }: {
-  total: number; healthy: number; warning: number; critical: number;
-  cost: number;
+function formatAge(seconds: number | null): string {
+  if (seconds === null) return 'never';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+// ── Stat strip (3 numbers at the top) ────────────────────────────────────────
+
+function StatStrip({ total, healthy, warning, critical, unknown }: {
+  total: number; healthy: number; warning: number; critical: number; unknown: number;
 }) {
   const navigate = useNavigate();
   const stats = [
-    { label: 'Total clusters', value: total,              color: 'text-foreground',                                                                    href: '/databases' },
-    { label: 'Healthy',        value: healthy,            color: 'text-emerald-600 dark:text-emerald-400',                                             href: '/databases?status=healthy' },
-    { label: 'Need attention', value: warning + critical, color: warning + critical > 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground',        href: '/databases?status=attention' },
-    { label: 'Monthly cost',   value: formatCurrency(cost), color: 'text-foreground',                                                                  href: '/billing' },
+    { label: 'Total clusters',  value: total,              color: 'text-foreground',                                                                    href: '/databases' },
+    { label: 'Healthy',         value: healthy,            color: 'text-emerald-600 dark:text-emerald-400',                                             href: '/databases?status=healthy' },
+    { label: 'Need attention',  value: warning + critical, color: warning + critical > 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground',        href: '/databases?status=attention' },
+    { label: 'No data yet',     value: unknown,            color: unknown > 0 ? 'text-muted-foreground' : 'text-foreground',                            href: '/databases' },
   ];
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -110,11 +117,20 @@ function ClusterRow({ db }: { db: Database }) {
         <p className="text-sm font-medium truncate">{db.name}</p>
         <p className="text-xs text-muted-foreground truncate">
           {db.type} · {db.cloud.toUpperCase()} · {db.region}
+          {db.isStale && <span className="text-amber-500 ml-1">· stale</span>}
         </p>
       </div>
       {!isHealthy && db.activeIssues > 0 && (
         <span className="text-xs text-muted-foreground flex-shrink-0">
           {db.activeIssues} issue{db.activeIssues !== 1 ? 's' : ''}
+        </span>
+      )}
+      {db.verdictAgeSeconds !== null && (
+        <span className={cn(
+          'text-xs flex-shrink-0',
+          db.isStale ? 'text-amber-500' : 'text-muted-foreground'
+        )}>
+          {formatAge(db.verdictAgeSeconds)}
         </span>
       )}
       <span className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity text-xs flex-shrink-0">→</span>
@@ -125,25 +141,25 @@ function ClusterRow({ db }: { db: Database }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function OverviewPage() {
-  const { clusters: rawClusters, issues: allIssues, loading, error, lastFetched } = useDashboard();
+  const { clusters: rawClusters, issues: allIssues, loading, error, lastFetched, secondsSinceFetch, refresh } = useDashboard();
   // Backend is the scoring authority — use its healthScore/healthStatus directly.
   // useScoredDatabases is for mock data only.
   const databases = rawClusters;
   const [search, setSearch] = useState('');
   const [showHealthy, setShowHealthy] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
-  const navigate = useNavigate();
 
-  const { critical, degraded, healthy, activeIssues, totalCost } = useMemo(() => {
+  const { critical, degraded, healthy, unknown, activeIssues, staleCount } = useMemo(() => {
     const critical  = databases.filter(db => db.healthStatus === 'critical');
     const degraded  = databases.filter(db => db.healthStatus === 'warning');
     const healthy   = databases.filter(db => db.healthStatus === 'excellent' || db.healthStatus === 'good');
+    const unknown   = databases.filter(db => db.healthStatus === 'unknown');
     const activeIssues = allIssues.filter(i => i.status === 'active');
-    const totalCost = databases.reduce((s, db) => s + db.monthlyCost, 0);
-    return { critical, degraded, healthy, activeIssues, totalCost };
+    const staleCount = databases.filter(db => db.isStale).length;
+    return { critical, degraded, healthy, unknown, activeIssues, staleCount };
   }, [databases, allIssues]);
 
-  const needsAttention = [...critical, ...degraded];
+  const needsAttention = [...critical, ...degraded, ...unknown];
 
   // Ranked issue feed — critical first, then warning
   const rankedIssues = useMemo(() => {
@@ -165,7 +181,9 @@ export function OverviewPage() {
     );
   }, [databases, needsAttention, showHealthy, search]);
 
-  const allHealthy = needsAttention.length === 0;
+  // "All clear" only when nothing needs attention AND no clusters are unknown.
+  // Unknown clusters haven't been analyzed yet — they shouldn't count as healthy.
+  const allHealthy = needsAttention.length === 0 && unknown.length === 0;
 
   if (loading && databases.length === 0) {
     return (
@@ -198,11 +216,42 @@ export function OverviewPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            {databases.length} clusters · {loading ? 'updating…' : error ? 'using cached data' : lastFetched ? `updated ${lastFetched.toLocaleTimeString()}` : 'loading…'}
+          <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-1.5">
+            {databases.length} clusters
+            {loading
+              ? ' · updating…'
+              : error
+                ? ' · using cached data'
+                : lastFetched
+                  ? ` · updated ${secondsSinceFetch}s ago`
+                  : ' · loading…'}
           </p>
         </div>
+        <button
+          onClick={refresh}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+          Refresh
+        </button>
       </div>
+
+      {/* Stale data banner — full-width, prominent */}
+      {staleCount > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-4 py-3">
+          <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200 flex-1">
+            {staleCount} cluster{staleCount !== 1 ? 's have' : ' has'} stale verdicts — last analysis run was over 30 minutes ago. Data may not reflect current state.
+          </p>
+          <button
+            onClick={refresh}
+            className="text-xs font-medium text-amber-700 dark:text-amber-300 underline underline-offset-2 flex-shrink-0 hover:text-amber-900 dark:hover:text-amber-100"
+          >
+            Refresh now
+          </button>
+        </div>
+      )}
 
       {/* Stat strip */}
       <StatStrip
@@ -210,7 +259,7 @@ export function OverviewPage() {
         healthy={healthy.length}
         warning={degraded.length}
         critical={critical.length}
-        cost={totalCost}
+        unknown={unknown.length}
       />
 
       {/* All clear banner — only shown when nothing needs attention */}
@@ -251,8 +300,10 @@ export function OverviewPage() {
           {/* Right: affected clusters */}
           <div className="lg:col-span-3 rounded-lg border bg-card">
             <div className="px-4 py-3 border-b flex items-center gap-2">
-              <p className="text-sm font-semibold flex-1">Clusters needing attention</p>
-              <Chip variant={critical.length > 0 ? 'red' : 'amber'}>
+              <p className="text-sm font-semibold flex-1">
+                {critical.length > 0 ? 'Clusters needing attention' : degraded.length > 0 ? 'Clusters needing attention' : 'Clusters with no data yet'}
+              </p>
+              <Chip variant={critical.length > 0 ? 'red' : degraded.length > 0 ? 'amber' : 'gray'}>
                 {needsAttention.length}
               </Chip>
             </div>

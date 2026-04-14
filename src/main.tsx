@@ -4,12 +4,15 @@ import './index.css'
 import App from './App.tsx'
 import { ThemeProvider } from './components/ThemeProvider'
 import { ScoringConfigProvider } from './components/ScoringConfigProvider'
+import { DashboardProvider } from './context/DashboardContext'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider defaultTheme="light">
       <ScoringConfigProvider>
-        <App />
+        <DashboardProvider>
+          <App />
+        </DashboardProvider>
       </ScoringConfigProvider>
     </ThemeProvider>
   </StrictMode>,

@@ -1,102 +1,102 @@
 """
 Ingestion routes.
 
-POST /ingest/metrics  — Prometheus remote_write receiver
-POST /ingest/logs     — Log signal ingestion
+POST /ingest/metrics  — Push metrics receiver (JSON format, bearer token auth)
+POST /ingest/logs     — Log signal ingestion (unchanged)
 
-Both endpoints:
-  1. Validate the incoming payload against canonical schemas
-  2. Upsert the cluster_metric_registry / cluster_log_registry
-  3. Store the raw metric/signal for baseline computation
-  4. Update cluster.last_metric_received_at / last_log_received_at
-  5. Update cluster.current_status freshness flag if gap detected
+Push flow:
+  1. Validate bearer token → (tenant_id, stack_id)
+  2. Parse JSON payload
+  3. Auto-create cluster if unknown (linked to stack → tenant)
+  4. Normalise raw metric names via DB-backed normalisation_map
+  5. Derive computed metrics (heap%, connection%, disk%)
+  6. Upsert cluster_metric_registry
+  7. Record unknown metrics to unmapped_metrics
+  8. Enqueue AnalysisJob → worker runs intelligence pipeline async
+  9. Return 202 Accepted
+
+Design:
+  - 202 Accepted — HTTP response never waits for analysis
+  - Normalisation map loaded from DB with 5-minute TTL cache
+  - Hardcoded ES_METRIC_MAP removed — DB is single source of truth
+  - stack_id set on auto-created clusters — tenant isolation correct
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+import logging
 from datetime import datetime, timezone
-from app.db.session import get_db
-from app.models.models import (
-    Cluster, ClusterMetricRegistry, ClusterLogRegistry,
-    LogSignal, DataFreshness, HealthStatus
-)
-from app.schemas.schemas import (
-    PrometheusWriteRequest, CanonicalLogSignal, CanonicalMetric
-)
-from app.core.config import get_settings
 
-settings = get_settings()
+from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.ingest.auth import get_bearer_credentials, validate_bearer_token
+from app.ingest.derived import apply_derived_rules
+from app.ingest.normaliser import load_norm_map, normalise_batch, record_unmapped
+from app.ingest.queue import AnalysisJob, enqueue
+from app.models.models import (
+    Cluster, ClusterLogRegistry, ClusterMetricRegistry,
+    DataFreshness, DbType, HealthStatus, LogSignal, SourceType,
+)
+from app.schemas.schemas import CanonicalLogSignal
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Metric name normalisation ────────────────────────────────────────────────
-# Maps Prometheus metric names (as customers send them) to canonical names.
-# This is the ES-specific normalisation table.
-# When we add MySQL, we add a mysql_metric_map here.
+# ── Push ingest payload schema ────────────────────────────────────────────────
 
-ES_METRIC_MAP: dict[str, dict] = {
-    # JVM
-    "elasticsearch_jvm_memory_used_bytes":         {"canonical": "jvm.heap.used.percent",      "category": "jvm",  "unit": "percent"},
-    "elasticsearch_jvm_memory_heap_used_percent":  {"canonical": "jvm.heap.used.percent",      "category": "jvm",  "unit": "percent"},
-    "jvm_memory_heap_used_ratio":                  {"canonical": "jvm.heap.used.percent",      "category": "jvm",  "unit": "percent"},
-    "elasticsearch_jvm_gc_collection_seconds_sum": {"canonical": "gc.old.collection.seconds",  "category": "jvm",  "unit": "seconds"},
-    "elasticsearch_jvm_gc_collection_count_total": {"canonical": "gc.old.collection.count",    "category": "jvm",  "unit": "count"},
-    # Thread pool
-    "elasticsearch_thread_pool_rejected_count_total": {"canonical": "thread_pool.write.rejected", "category": "io", "unit": "count"},
-    "elasticsearch_thread_pool_queue_count":          {"canonical": "thread_pool.write.queue",    "category": "io", "unit": "count"},
-    # Shards
-    "elasticsearch_cluster_health_unassigned_shards": {"canonical": "cluster.shards.unassigned", "category": "shard", "unit": "count"},
-    "elasticsearch_cluster_health_status":            {"canonical": "cluster.health.status",      "category": "shard", "unit": "count"},
-    # Disk
-    "elasticsearch_filesystem_data_available_bytes": {"canonical": "fs.total.available.bytes",   "category": "disk", "unit": "bytes"},
-    "elasticsearch_filesystem_data_size_bytes":      {"canonical": "fs.total.total.bytes",        "category": "disk", "unit": "bytes"},
-    # Search
-    "elasticsearch_indices_search_query_time_seconds_total": {"canonical": "search.query.time.ms",   "category": "search", "unit": "ms"},
-    "elasticsearch_indices_search_query_total":              {"canonical": "search.query.total",      "category": "search", "unit": "count"},
-}
-
-
-def normalise_metric(source_name: str, labels: dict[str, str]) -> dict | None:
+class PushMetricsPayload(BaseModel):
     """
-    Look up a source metric name in the normalisation map.
-    Returns the canonical mapping or None if unknown.
+    Simple JSON push format. Prometheus remote_write protobuf comes in Phase 2.5.
+
+    cluster_id: composite string key, e.g. "Alpha|us-east1|els_shrdone_alpha_va"
+    db_type:    "elasticsearch" | "mysql" | "postgres" | "cassandra"
+    timestamp:  ISO-8601 UTC timestamp of when the metrics were collected
+    metrics:    {raw_metric_name: float_value} — cluster-level aggregates
+    instances:  optional {instance_id: {raw_metric_name: float_value}} — per-node breakdowns
     """
-    return ES_METRIC_MAP.get(source_name)
+    cluster_id: str
+    db_type: str
+    timestamp: datetime
+    metrics: dict[str, float] = {}
+    instances: dict[str, dict[str, float]] = {}
 
 
-def extract_cluster_id(labels: dict[str, str]) -> str | None:
-    """
-    Extract cluster identifier from Prometheus labels.
-    Customers tag their metrics with cluster or job labels.
-    """
-    return labels.get("cluster") or labels.get("job") or labels.get("instance")
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-
-# ── GET or create cluster ─────────────────────────────────────────────────────
-
-async def get_or_create_cluster(
+async def _get_or_create_cluster(
     db: AsyncSession,
     cluster_id: str,
-    db_type: str = "elasticsearch",
+    db_type: DbType,
+    stack_id,
 ) -> Cluster:
+    """
+    Look up cluster by composite string key. Auto-create if not found.
+    stack_id is always set — ensures tenant isolation chain is intact.
+    """
     stmt = select(Cluster).where(Cluster.cluster_id == cluster_id)
     cluster = (await db.execute(stmt)).scalar_one_or_none()
 
-    if not cluster:
+    if cluster is None:
+        display_name = cluster_id.split("|")[-1] if "|" in cluster_id else cluster_id
         cluster = Cluster(
             cluster_id=cluster_id,
             db_type=db_type,
-            display_name=cluster_id,
+            stack_id=stack_id,
+            display_name=display_name,
             current_status=HealthStatus.unknown,
         )
         db.add(cluster)
-        await db.flush()  # Get the UUID without committing
+        await db.flush()
+        logger.info(f"Auto-created cluster '{cluster_id}' from push payload")
 
     return cluster
 
 
-async def upsert_metric_registry(
+async def _upsert_metric_registry(
     db: AsyncSession,
     cluster: Cluster,
     source_name: str,
@@ -111,13 +111,13 @@ async def upsert_metric_registry(
         )
     )
     existing = (await db.execute(stmt)).scalar_one_or_none()
-
     now = datetime.now(timezone.utc)
+
     if existing:
         existing.last_seen_at = now
         existing.is_active = True
     else:
-        entry = ClusterMetricRegistry(
+        db.add(ClusterMetricRegistry(
             cluster_id=cluster.id,
             canonical_name=canonical_name,
             source_metric_name=source_name,
@@ -126,60 +126,106 @@ async def upsert_metric_registry(
             first_seen_at=now,
             last_seen_at=now,
             is_active=True,
-        )
-        db.add(entry)
+        ))
 
 
 # ── POST /ingest/metrics ──────────────────────────────────────────────────────
 
-@router.post("/metrics", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/metrics", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_metrics(
-    payload: PrometheusWriteRequest,
+    payload: PushMetricsPayload,
     db: AsyncSession = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials | None = Security(get_bearer_credentials),
 ):
     """
-    Receives Prometheus remote_write payloads.
-    Normalises metric names, upserts the registry, stamps last_metric_received_at.
-
-    Customers configure Prometheus remote_write to point here:
-      remote_write:
-        - url: https://your-platform/ingest/metrics
+    Push metrics receiver. Accepts canonical JSON payload from customer agents.
+    Returns 202 immediately — analysis runs asynchronously via the worker queue.
     """
-    now = datetime.now(timezone.utc)
-    processed = 0
+    # 1. Auth — validate bearer token, get tenant + stack context
+    token_record = await validate_bearer_token(db, credentials)
+    tenant_id = token_record.tenant_id
+    stack_id = token_record.stack_id
 
-    for ts in payload.timeseries:
-        labels = {l.name: l.value for l in ts.labels}
-        source_name = labels.get("__name__", "")
-        cluster_id = extract_cluster_id(labels)
-
-        if not cluster_id or not source_name:
-            continue
-
-        mapping = normalise_metric(source_name, labels)
-        if not mapping:
-            # Unknown metric — still register it so user can see what's arriving
-            # but we can't baseline or analyze it until we add it to the map
-            continue
-
-        cluster = await get_or_create_cluster(db, cluster_id)
-        cluster.last_metric_received_at = now
-
-        await upsert_metric_registry(
-            db, cluster,
-            source_name,
-            mapping["canonical"],
-            mapping["category"],
-            mapping["unit"],
+    # 2. Parse db_type
+    try:
+        db_type = DbType(payload.db_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown db_type '{payload.db_type}'. Valid: {[e.value for e in DbType]}",
         )
-        processed += 1
 
-    # NOTE: Raw metric values are NOT stored here.
-    # The baseline engine reads directly from Prometheus/Grafana API
-    # or a separate time-series buffer. We store only the registry and baselines.
-    # This keeps storage costs minimal — a core architectural constraint.
+    if not payload.metrics and not payload.instances:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Payload must include at least one of 'metrics' or 'instances'",
+        )
 
-    return None
+    received_at = datetime.now(timezone.utc)
+
+    # 3. Auto-create cluster if unknown
+    cluster = await _get_or_create_cluster(db, payload.cluster_id, db_type, stack_id)
+    cluster.last_metric_received_at = received_at
+
+    # 4. Load normalisation map from DB (TTL-cached, falls back to grafana_cloud entries)
+    norm_map = await load_norm_map(db, SourceType.push, db_type)
+
+    # 5. Normalise cluster-level metrics
+    canonical_metrics, unmapped_names = normalise_batch(payload.metrics, norm_map)
+
+    # Record unmapped metrics for product team review
+    for raw_name in unmapped_names:
+        sample_value = payload.metrics.get(raw_name, 0.0)
+        await record_unmapped(db, tenant_id, stack_id, SourceType.push, db_type, raw_name, sample_value)
+
+    # 6. Compute derived metrics (heap%, disk%, connection%)
+    canonical_metrics = apply_derived_rules(canonical_metrics, db_type)
+
+    # 7. Normalise per-instance metrics
+    per_instance_canonical: dict[str, dict[str, float]] = {}
+    for instance_id, instance_raw in payload.instances.items():
+        inst_canonical, inst_unmapped = normalise_batch(instance_raw, norm_map)
+        inst_canonical = apply_derived_rules(inst_canonical, db_type)
+        per_instance_canonical[instance_id] = inst_canonical
+        # Record per-instance unmapped metrics too
+        for raw_name in inst_unmapped:
+            sample_value = instance_raw.get(raw_name, 0.0)
+            await record_unmapped(db, tenant_id, stack_id, SourceType.push, db_type, raw_name, sample_value)
+
+    # 8. Upsert metric registry for all known metrics
+    for raw_name, entry in norm_map.items():
+        if raw_name in payload.metrics:
+            await _upsert_metric_registry(
+                db, cluster, raw_name,
+                entry.canonical_name, entry.category, entry.unit,
+            )
+
+    await db.commit()
+
+    # 9. Enqueue analysis job — response does not wait for this
+    job = AnalysisJob(
+        tenant_id=tenant_id,
+        stack_id=stack_id,
+        cluster_id=payload.cluster_id,
+        db_type=db_type,
+        metrics=canonical_metrics,
+        per_instance=per_instance_canonical,
+        received_at=received_at,
+    )
+    await enqueue(job)
+
+    logger.info(
+        f"Push ingest accepted — cluster={payload.cluster_id} "
+        f"canonical={len(canonical_metrics)} unmapped={len(unmapped_names)} "
+        f"instances={len(per_instance_canonical)}"
+    )
+
+    return {
+        "status": "accepted",
+        "cluster_id": payload.cluster_id,
+        "canonical_metrics_received": len(canonical_metrics),
+        "unmapped_metrics": len(unmapped_names),
+    }
 
 
 # ── POST /ingest/logs ─────────────────────────────────────────────────────────
@@ -197,7 +243,13 @@ async def ingest_log_signals(
     now = datetime.now(timezone.utc)
 
     for signal in signals:
-        cluster = await get_or_create_cluster(db, signal.cluster_id, signal.db_type)
+        # Resolve cluster by cluster_id string
+        stmt = select(Cluster).where(Cluster.cluster_id == signal.cluster_id)
+        cluster = (await db.execute(stmt)).scalar_one_or_none()
+        if cluster is None:
+            logger.warning(f"Log signal received for unknown cluster '{signal.cluster_id}' — skipping")
+            continue
+
         cluster.last_log_received_at = now
 
         # Upsert log registry
@@ -232,4 +284,5 @@ async def ingest_log_signals(
             source_platform=signal.source_platform,
         ))
 
+    await db.commit()
     return None
