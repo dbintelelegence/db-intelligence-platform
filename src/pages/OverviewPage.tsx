@@ -191,6 +191,7 @@ export function OverviewPage() {
   }
 
   return (
+    <>
     <div className="space-y-5">
 
       {/* Top bar */}
@@ -322,5 +323,6 @@ export function OverviewPage() {
     {selectedIssue && (
       <IssueDetailPanel issue={selectedIssue} onClose={() => setSelectedIssue(null)} />
     )}
+    </>
   );
 }
