@@ -1,4 +1,4 @@
-import { AlertTriangle, AlertCircle, Info, Database, ChevronRight, Clock } from 'lucide-react';
+import { AlertTriangle, AlertCircle, Info, Database, Server, ChevronRight, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatTimeAgo } from '@/lib/formatters';
 import type { Issue } from '@/types';
@@ -85,6 +85,14 @@ export function IssueCard({ issue, onClick }: IssueCardProps) {
               <Database className="h-3.5 w-3.5" />
               <span className="font-medium">{issue.databaseName}</span>
             </div>
+
+            {/* Instance (per-node issues only) */}
+            {issue.instanceId && (
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Server className="h-3.5 w-3.5" />
+                <span className="font-mono text-xs">{issue.instanceId}</span>
+              </div>
+            )}
 
             {/* Category */}
             <span className={cn('px-2 py-1 rounded-full font-medium', colors.badge)}>
