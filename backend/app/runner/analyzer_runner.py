@@ -31,11 +31,14 @@ from app.adapters.grafana_cloud.adapter import GrafanaCloudAdapter
 from app.analyzers.elasticsearch.jvm_heap_pressure import JvmHeapPressureAnalyzer
 from app.analyzers.elasticsearch.shard_allocation import ShardAllocationAnalyzer
 from app.analyzers.elasticsearch.thread_pool_saturation import ThreadPoolSaturationAnalyzer
+from app.analyzers.mysql.connection_pool_saturation import ConnectionPoolSaturationAnalyzer
+from app.analyzers.mysql.replication_lag import ReplicationLagAnalyzer
+from app.analyzers.mysql.innodb_buffer_pool_pressure import InnodbBufferPoolPressureAnalyzer
 from app.baseline.engine import WINDOW_ALL, get_baselines_for_cluster
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
 from app.models.models import (
-    Cluster, DataFreshness, HealthStatus, Verdict, VerdictEvidence,
+    Cluster, DataFreshness, DbType, HealthStatus, Verdict, VerdictEvidence,
 )
 from app.runner.llm_explainer import generate_explanation
 
@@ -59,13 +62,31 @@ ALL_ALPHA_CLUSTERS = [
     "Alpha|us-east1|els_sixna_alpha_va",
 ]
 
-# ── Registered analyzers ──────────────────────────────────────────────────────
+MYSQL_ALPHA_CLUSTERS = [
+    "Alpha|us-east1|mysql_aa_alpha",
+    "Alpha|us-east1|mysql_bigaa_alpha",
+    "Alpha|us-east1|mysql_mng_alpha",
+    "Alpha|us-east1|mysql_sharedaa_alpha",
+]
 
-ANALYZERS = [
+# ── Registered analyzers — organized by DB type ───────────────────────────────
+
+ES_ANALYZERS = [
     JvmHeapPressureAnalyzer(),
     ShardAllocationAnalyzer(),
     ThreadPoolSaturationAnalyzer(),
 ]
+
+MYSQL_ANALYZERS = [
+    ConnectionPoolSaturationAnalyzer(),
+    ReplicationLagAnalyzer(),
+    InnodbBufferPoolPressureAnalyzer(),
+]
+
+ANALYZERS_BY_DB_TYPE = {
+    DbType.elasticsearch: ES_ANALYZERS,
+    DbType.mysql: MYSQL_ANALYZERS,
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -158,11 +179,11 @@ def _worst_status(*statuses: HealthStatus) -> HealthStatus:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def run_cluster(db, adapter: GrafanaCloudAdapter, cluster_composite_id: str, run_at: datetime) -> None:
+async def run_cluster(db, cluster_composite_id: str, run_at: datetime) -> None:
     """Run a full analysis cycle for a single cluster."""
     logger.info(f"\n── Analyzing {cluster_composite_id} ──")
 
-    # 1. Resolve composite string key → UUID
+    # 1. Resolve composite string key → UUID + db_type
     stmt = select(Cluster).where(Cluster.cluster_id == cluster_composite_id)
     cluster = (await db.execute(stmt)).scalar_one_or_none()
     if cluster is None:
@@ -170,14 +191,28 @@ async def run_cluster(db, adapter: GrafanaCloudAdapter, cluster_composite_id: st
         return
     cluster_uuid = cluster.id
 
-    # 2. Collect all metrics needed
+    # 2. Select analyzers and build adapter for this db_type
+    analyzers = ANALYZERS_BY_DB_TYPE.get(cluster.db_type, [])
+    if not analyzers:
+        logger.warning(f"  No analyzers registered for db_type={cluster.db_type} — skipping")
+        return
+
+    adapter = GrafanaCloudAdapter(
+        prometheus_url=settings.grafana_gcp_prod_url,
+        instance_id=settings.grafana_gcp_prod_instance_id,
+        api_key=settings.grafana_gcp_prod_api_key,
+        db=db,
+        db_type=cluster.db_type,
+    )
+
+    # 3. Collect all metrics needed
     all_metrics_needed: set[str] = set()
-    for analyzer in ANALYZERS:
+    for analyzer in analyzers:
         all_metrics_needed.update(analyzer.REQUIRED_METRICS)
         if hasattr(analyzer, "CORROBORATING_METRICS"):
             all_metrics_needed.update(analyzer.CORROBORATING_METRICS)
 
-    # 3. Fetch live metrics
+    # 4. Fetch live metrics
     metrics = await adapter.get_latest_metrics(
         cluster_id=cluster_composite_id,
         canonical_names=list(all_metrics_needed),
@@ -187,15 +222,15 @@ async def run_cluster(db, adapter: GrafanaCloudAdapter, cluster_composite_id: st
         return
     logger.info(f"  Metrics: {list(metrics.keys())}")
 
-    # 4. Load baselines
+    # 5. Load baselines
     baselines = await get_baselines_for_cluster(db, cluster_composite_id, WINDOW_ALL)
     logger.info(f"  Baselines: {len(baselines)} profiles")
 
     log_signals: dict[str, int] = {}
     all_statuses: list[HealthStatus] = []
 
-    # 5. Run analyzers
-    for analyzer in ANALYZERS:
+    # 6. Run analyzers
+    for analyzer in analyzers:
         available = set(metrics.keys())
         if not analyzer.can_run(available):
             missing = set(analyzer.REQUIRED_METRICS) - available
@@ -248,25 +283,23 @@ async def run(cluster_ids: list[str]) -> None:
 
     logger.info("Analyzer runner starting")
     logger.info(f"  Clusters:  {len(cluster_ids)}")
-    logger.info(f"  Analyzers: {[a.ANALYZER_NAME for a in ANALYZERS]}")
+    logger.info(f"  ES analyzers:    {[a.ANALYZER_NAME for a in ES_ANALYZERS]}")
+    logger.info(f"  MySQL analyzers: {[a.ANALYZER_NAME for a in MYSQL_ANALYZERS]}")
     logger.info(f"  Run at:    {run_at.isoformat()}")
 
     async with AsyncSessionLocal() as db:
-        adapter = GrafanaCloudAdapter(
-            prometheus_url=settings.grafana_gcp_prod_url,
-            instance_id=settings.grafana_gcp_prod_instance_id,
-            api_key=settings.grafana_gcp_prod_api_key,
-            db=db,
-        )
-
         for cluster_id in cluster_ids:
-            await run_cluster(db, adapter, cluster_id, run_at)
+            await run_cluster(db, cluster_id, run_at)
 
     logger.info("\nAll clusters done.")
 
 
 if __name__ == "__main__":
-    if "--all-alpha" in sys.argv:
+    if "--all-alpha-mysql" in sys.argv:
+        clusters = MYSQL_ALPHA_CLUSTERS
+    elif "--all-alpha-both" in sys.argv:
+        clusters = ALL_ALPHA_CLUSTERS + MYSQL_ALPHA_CLUSTERS
+    elif "--all-alpha" in sys.argv or "--all-alpha-es" in sys.argv:
         clusters = ALL_ALPHA_CLUSTERS
     elif len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
         clusters = [sys.argv[1]]

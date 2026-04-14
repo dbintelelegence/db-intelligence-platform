@@ -155,13 +155,37 @@ Customer sees only: database names and health status
 
 ## What is built and working
 
-backend/app/analyzers/elasticsearch/jvm_heap_pressure.py  21/21 tests
-backend/app/baseline/engine.py                            complete
-backend/app/models/models.py                              schema defined
-backend/app/schemas/schemas.py                            complete
-src/pages/OverviewPage.tsx                                rebuilt
-src/pages/DatabaseDetailPage.tsx                          rebuilt
-src/components/layout/CommandPalette.tsx                  Cmd+K search
+### Backend
+backend/app/models/models.py                                         schema + migrations complete
+backend/app/schemas/schemas.py                                        complete
+backend/app/baseline/engine.py                                        complete
+backend/app/adapters/grafana_cloud/adapter.py                         live, all 9 metrics, CUSTOM_QUERIES for CPU
+backend/app/analyzers/elasticsearch/jvm_heap_pressure.py             21/21 tests, live
+backend/app/analyzers/elasticsearch/shard_allocation.py              live
+backend/app/analyzers/elasticsearch/thread_pool_saturation.py        live
+backend/app/baseline/seeder.py                                        live, --all-alpha flag
+backend/app/runner/analyzer_runner.py                                 live, --all-alpha flag, LLM on status change
+backend/app/runner/llm_explainer.py                                   live, Claude Haiku via Anthropic API
+backend/app/api/routes/dashboard.py                                   /dashboard/summary — live metrics, UUID IDs
+backend/app/api/routes/ai.py                                          /ai/chat — Anthropic proxy endpoint
+backend/scripts/seed_normalisation.py                                 seeds tenant, stack, normalisation_map
+backend/scripts/seed_alpha_clusters.py                                seeds all 5 Alpha ES clusters
+
+### All 5 Alpha clusters live
+els_shrdegt_alpha_va — good
+els_shrdone_alpha_va — good
+els_shrdsix_alpha_va — good
+els_shrdsvn_alpha_va — warning (JVM heap pressure)
+els_sixna_alpha_va   — warning (JVM heap pressure)
+
+### Frontend
+src/pages/OverviewPage.tsx          live data, skeleton loading, clickable stat strip navigation
+src/pages/DatabaseDetailPage.tsx    live data, spinner while loading (no "not found" flash)
+src/pages/DatabasesPage.tsx         live data, status filter (?status=healthy|attention)
+src/hooks/useDashboard.ts           fetches /dashboard/summary, empty during load (no mock flash)
+src/components/layout/CommandPalette.tsx   Cmd+K search
+src/components/features/database-detail/ClusterAIPanel.tsx   AI chat via backend proxy
+src/components/features/summarization/ChatInterface.tsx       markdown rendering
 
 ---
 
@@ -169,14 +193,8 @@ src/components/layout/CommandPalette.tsx                  Cmd+K search
 
 Always check _specs/STATUS.md before starting any work.
 
-1. Grafana Cloud adapter
-2. Normalisation map seeding
-3. Baseline seeder
-4. Analyzer runner
-5. Verdict writer
-6. Shard allocation analyzer
-7. Thread pool saturation analyzer
-8. Frontend API client (replace mock data)
+1. Internal admin views (unmapped metrics table)
+2. End-to-end integration test
 9. Internal admin views (unmapped metrics)
 
 ---

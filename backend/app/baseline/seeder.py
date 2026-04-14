@@ -40,6 +40,7 @@ from app.baseline.engine import (
 )
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
+from app.models.models import DbType
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,11 +62,18 @@ ALL_ALPHA_CLUSTERS = [
     "Alpha|us-east1|els_sixna_alpha_va",
 ]
 
+MYSQL_ALPHA_CLUSTERS = [
+    "Alpha|us-east1|mysql_aa_alpha",
+    "Alpha|us-east1|mysql_bigaa_alpha",
+    "Alpha|us-east1|mysql_mng_alpha",
+    "Alpha|us-east1|mysql_sharedaa_alpha",
+]
+
 # ── Metrics to baseline ───────────────────────────────────────────────────────
 # Canonical names only. Adapter resolves to raw PromQL.
 # Order matters for sequential fetching — highest-value metrics first.
 
-METRICS = [
+ES_METRICS = [
     # JVM Heap Pressure analyzer
     "jvm.heap.used.percent",          # derived: used_bytes / max_bytes * 100
     "gc.old.collection.seconds",
@@ -76,6 +84,28 @@ METRICS = [
     # Thread Pool analyzer
     "thread_pool.write.rejected",
     "thread_pool.write.queue",
+]
+
+# Backward-compat alias
+METRICS = ES_METRICS
+
+MYSQL_METRICS = [
+    # Connection pool saturation analyzer
+    "mysql.connection.pct",           # CUSTOM_QUERY: threads_connected/max_connections*100
+    "mysql.connections.current",
+    "mysql.threads.running",
+    # Replication lag analyzer
+    "mysql.replication.lag.seconds",  # CUSTOM_QUERY: max across channels
+    "mysql.replication.io.running",   # CUSTOM_QUERY: avg across instances
+    "mysql.replication.sql.running",  # CUSTOM_QUERY: avg across instances
+    # InnoDB buffer pool pressure analyzer
+    "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_available*100
+    "mysql.buffer.pool.bytes",
+    "mysql.memory.available.bytes",
+    # Corroborating
+    "mysql.slow.query.rate",          # CUSTOM_QUERY: irate of slow_queries
+    "mysql.tmp.disk.tables",
+    "mysql.select.full.join",
 ]
 
 # Window types to compute — all 5 required by the engine
@@ -91,12 +121,14 @@ STEP_SECONDS = 300  # 5 minutes → 576 points per metric over 2 days
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def seed_cluster(adapter: GrafanaCloudAdapter, db, cluster_id: str, now: datetime, start: datetime) -> tuple[int, int]:
+async def seed_cluster(adapter: GrafanaCloudAdapter, db, cluster_id: str, now: datetime, start: datetime, metrics: list[str] | None = None) -> tuple[int, int]:
     """Seed baselines for a single cluster. Returns (written, skipped)."""
+    if metrics is None:
+        metrics = ES_METRICS
     profiles_written = 0
     profiles_skipped = 0
 
-    for metric in METRICS:
+    for metric in metrics:
         logger.info(f"  [{cluster_id}] Fetching {metric} ...")
 
         series_list = await adapter.get_metrics(
@@ -151,12 +183,15 @@ async def seed_cluster(adapter: GrafanaCloudAdapter, db, cluster_id: str, now: d
     return profiles_written, profiles_skipped
 
 
-async def run(cluster_ids: list[str]) -> None:
+async def run(cluster_ids: list[str], db_type: DbType = DbType.elasticsearch) -> None:
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=LOOKBACK_DAYS)
+    metrics = MYSQL_METRICS if db_type == DbType.mysql else ES_METRICS
 
     logger.info(f"Baseline seeder starting")
     logger.info(f"  Clusters: {len(cluster_ids)}")
+    logger.info(f"  DB type:  {db_type.value}")
+    logger.info(f"  Metrics:  {len(metrics)}")
     logger.info(f"  Window:   {start.isoformat()} → {now.isoformat()} ({LOOKBACK_DAYS}d)")
     logger.info(f"  Step:     {STEP_SECONDS}s ({STEP_SECONDS // 60} min)")
 
@@ -169,6 +204,7 @@ async def run(cluster_ids: list[str]) -> None:
             instance_id=settings.grafana_gcp_prod_instance_id,
             api_key=settings.grafana_gcp_prod_api_key,
             db=db,
+            db_type=db_type,
         )
 
         conn = await adapter.test_connection()
@@ -179,7 +215,7 @@ async def run(cluster_ids: list[str]) -> None:
 
         for cluster_id in cluster_ids:
             logger.info(f"\n── Seeding {cluster_id} ──")
-            written, skipped = await seed_cluster(adapter, db, cluster_id, now, start)
+            written, skipped = await seed_cluster(adapter, db, cluster_id, now, start, metrics=metrics)
             total_written += written
             total_skipped += skipped
 
@@ -189,11 +225,20 @@ async def run(cluster_ids: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    if "--all-alpha" in sys.argv:
+    if "--all-alpha-mysql" in sys.argv:
+        clusters = MYSQL_ALPHA_CLUSTERS
+        db_type = DbType.mysql
+    elif "--all-alpha-both" in sys.argv:
+        clusters = ALL_ALPHA_CLUSTERS + MYSQL_ALPHA_CLUSTERS
+        db_type = DbType.elasticsearch  # ES first; mysql clusters handled separately
+    elif "--all-alpha" in sys.argv or "--all-alpha-es" in sys.argv:
         clusters = ALL_ALPHA_CLUSTERS
+        db_type = DbType.elasticsearch
     elif len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
         clusters = [sys.argv[1]]
+        db_type = DbType.mysql if "mysql" in sys.argv[1] else DbType.elasticsearch
     else:
         clusters = [DEFAULT_CLUSTER_ID]
+        db_type = DbType.elasticsearch
 
-    asyncio.run(run(clusters))
+    asyncio.run(run(clusters, db_type=db_type))

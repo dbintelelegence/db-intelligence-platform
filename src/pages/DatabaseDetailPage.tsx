@@ -245,7 +245,7 @@ export function DatabaseDetailPage() {
   const navigate = useNavigate();
   const [showAllMetrics, setShowAllMetrics] = useState(false);
   const { timeRange } = useTimeRange('24h');
-  const { clusters, issues: allIssues } = useDashboard();
+  const { clusters, issues: allIssues, loading } = useDashboard();
 
   const database = useMemo(() => {
     if (!id) return null;
@@ -268,6 +268,18 @@ export function DatabaseDetailPage() {
     if (!database) return null;
     return generateMetricsTimeSeries(database, timeRange);
   }, [database, timeRange]);
+
+  // Show a spinner while the API is still in flight — the cluster may not be in
+  // mock data (which is the temporary fallback), so suppress "not found" until
+  // real data has arrived.
+  if (!database && loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+        <div className="h-5 w-5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+        <p className="text-sm text-muted-foreground">Loading cluster…</p>
+      </div>
+    );
+  }
 
   if (!database) {
     return (

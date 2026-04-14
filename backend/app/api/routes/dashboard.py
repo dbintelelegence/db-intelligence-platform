@@ -57,9 +57,12 @@ _SEVERITY_MAP = {
 }
 
 _CATEGORY_MAP = {
-    "jvm_heap_pressure":       "performance",
-    "shard_allocation_failure": "availability",
-    "thread_pool_saturation":  "performance",
+    "jvm_heap_pressure":                  "performance",
+    "shard_allocation_failure":           "availability",
+    "thread_pool_saturation":             "performance",
+    "mysql_connection_pool_saturation":   "availability",
+    "mysql_replication_lag":              "replication",
+    "mysql_innodb_buffer_pool_pressure":  "performance",
 }
 
 
@@ -96,43 +99,51 @@ def _cluster_to_database(
 
     # ── Build metrics from live Grafana values ────────────────────────────────
 
-    # JVM heap % (derived metric — already computed by adapter)
-    jvm_heap_pct = live_metrics.get("jvm.heap.used.percent", 0.0)
+    if cluster.db_type.value == "mysql":
+        # MySQL-specific metrics
+        connection_pct = live_metrics.get("mysql.connection.pct", 0.0)
+        cpu_pct = live_metrics.get("mysql.os.cpu.percent", 0.0)
+        disk_total = live_metrics.get("mysql.disk.total.bytes", 0.0)
+        disk_avail = live_metrics.get("mysql.disk.available.bytes", 0.0)
+        storage_pct = ((disk_total - disk_avail) / disk_total * 100.0) if disk_total > 0 else 0.0
+        replication_lag = live_metrics.get("mysql.replication.lag.seconds", 0.0)
+        buffer_pool_pct = live_metrics.get("mysql.buffer.pool.pressure.pct", 0.0)
 
-    # CPU: os.cpu.percent is already a percentage (0–100) from the custom PromQL query.
-    cpu_pct = live_metrics.get("os.cpu.percent", 0.0)
+        metrics = {
+            "cpu":            round(cpu_pct, 1),
+            "memory":         round(buffer_pool_pct, 1),  # buffer pool pressure as memory proxy
+            "storage":        round(storage_pct, 1),
+            "connections":    round(connection_pct, 1),   # connection pool % used
+            "maxConnections": 100,                        # represents 100% scale
+            "latency":        round(replication_lag * 1000, 1),  # lag in ms as latency proxy
+            "throughput":     0,
+        }
+    else:
+        # Elasticsearch metrics
+        jvm_heap_pct = live_metrics.get("jvm.heap.used.percent", 0.0)
+        cpu_pct = live_metrics.get("os.cpu.percent", 0.0)
+        fs_total = live_metrics.get("fs.total.total.bytes", 0.0)
+        fs_avail = live_metrics.get("fs.total.available.bytes", 0.0)
+        storage_pct = ((fs_total - fs_avail) / fs_total * 100.0) if fs_total > 0 else 0.0
 
-    # Storage: (total - available) / total * 100
-    fs_total = live_metrics.get("fs.total.total.bytes", 0.0)
-    fs_avail = live_metrics.get("fs.total.available.bytes", 0.0)
-    storage_pct = 0.0
-    if fs_total > 0:
-        storage_pct = ((fs_total - fs_avail) / fs_total) * 100.0
+        # Search latency: avg ms per query = query_time_seconds / query_total * 1000
+        search_time_s = live_metrics.get("search.query.time.ms", 0.0)
+        search_total = live_metrics.get("search.query.total", 0.0)
+        latency_ms = (search_time_s / search_total * 1000.0) if search_total > 0 else 0.0
+        throughput = search_total / 3600.0
 
-    # Search latency: avg ms per query = query_time_seconds / query_total * 1000
-    # Raw metric is elasticsearch_indices_search_query_time_seconds (cumulative seconds).
-    # canonical name is search.query.time.ms but stored value is in seconds — convert here.
-    search_time_s = live_metrics.get("search.query.time.ms", 0.0)
-    search_total = live_metrics.get("search.query.total", 0.0)
-    latency_ms = 0.0
-    if search_total > 0:
-        latency_ms = (search_time_s / search_total) * 1000.0
-
-    # Throughput: search queries (rough proxy — indexing adds noise)
-    throughput = search_total / 3600.0  # convert cumulative to ~qps over last hour
-
-    metrics = {
-        "cpu":            round(cpu_pct, 1),
-        "memory":         round(jvm_heap_pct, 1),
-        "storage":        round(storage_pct, 1),
-        "connections":    0,        # ES doesn't expose connection count via exporter
-        "maxConnections": 100,
-        "latency":        round(latency_ms, 1),
-        "throughput":     round(throughput, 1),
-    }
+        metrics = {
+            "cpu":            round(cpu_pct, 1),
+            "memory":         round(jvm_heap_pct, 1),
+            "storage":        round(storage_pct, 1),
+            "connections":    0,
+            "maxConnections": 100,
+            "latency":        round(latency_ms, 1),
+            "throughput":     round(throughput, 1),
+        }
 
     return {
-        "id": cluster.cluster_id,          # stable string key used as route param
+        "id": str(cluster.id),             # UUID — safe for use as URL route param
         "name": cluster.display_name,
         "type": db_type,
         "cloud": cloud,
@@ -178,7 +189,7 @@ def _verdict_to_issue(verdict: Verdict, cluster: Cluster) -> dict[str, Any]:
 
     return {
         "id": str(verdict.id),
-        "databaseId": cluster.cluster_id,
+        "databaseId": str(cluster.id),
         "databaseName": cluster.display_name,
         "severity": severity,
         "category": category,
@@ -212,20 +223,42 @@ def _analyzer_title(analyzer_name: str, status: str) -> str:
             "critical": "Write thread pool saturated — indexing rejections active",
             "degraded": "Write thread pool approaching saturation",
         },
+        "mysql_connection_pool_saturation": {
+            "critical": "Connection pool exhausted — new connections being refused",
+            "degraded": "Connection pool elevated above baseline",
+        },
+        "mysql_replication_lag": {
+            "critical": "Replication thread stopped or lag critically high",
+            "degraded": "Replication lag elevated above baseline",
+        },
+        "mysql_innodb_buffer_pool_pressure": {
+            "critical": "InnoDB buffer pool consuming critical share of available RAM",
+            "degraded": "InnoDB buffer pool pressure elevated above baseline",
+        },
     }
     return titles.get(analyzer_name, {}).get(status, f"{analyzer_name} — {status}")
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
-# Metrics to fetch live from Grafana for each cluster
-_LIVE_METRICS = [
+# Metrics to fetch live from Grafana per db_type
+_ES_LIVE_METRICS = [
     "jvm.heap.used.percent",      # derived
     "os.cpu.percent",             # cpu % used (custom PromQL via rate on node_cpu_seconds_total)
     "fs.total.total.bytes",       # storage total (/liveperson mountpoint)
     "fs.total.available.bytes",   # storage available (/liveperson mountpoint)
     "search.query.time.ms",       # latency numerator (seconds, converted to ms in code)
     "search.query.total",         # latency denominator + throughput
+]
+
+_MYSQL_LIVE_METRICS = [
+    "mysql.connection.pct",           # CUSTOM_QUERY: threads_connected/max_connections*100
+    "mysql.os.cpu.percent",           # CUSTOM_QUERY: node_cpu idle rate
+    "mysql.disk.total.bytes",         # node_exporter: root mountpoint
+    "mysql.disk.available.bytes",     # node_exporter: root mountpoint
+    "mysql.replication.lag.seconds",  # CUSTOM_QUERY: max across channels
+    "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_available*100
+    "mysql.buffer.pool.bytes",        # raw buffer pool size
 ]
 
 
@@ -278,19 +311,31 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any
     for v in all_verdicts:
         verdicts_by_cluster.setdefault(v.cluster_id, []).append(v)
 
-    # Fetch live metrics from Grafana for each cluster
-    adapter = GrafanaCloudAdapter(
+    # Build one adapter per db_type — different role label and normalisation map
+    from app.models.models import DbType as _DbType
+    es_adapter = GrafanaCloudAdapter(
         prometheus_url=settings.grafana_gcp_prod_url,
         instance_id=settings.grafana_gcp_prod_instance_id,
         api_key=settings.grafana_gcp_prod_api_key,
         db=db,
+        db_type=_DbType.elasticsearch,
     )
+    mysql_adapter = GrafanaCloudAdapter(
+        prometheus_url=settings.grafana_gcp_prod_url,
+        instance_id=settings.grafana_gcp_prod_instance_id,
+        api_key=settings.grafana_gcp_prod_api_key,
+        db=db,
+        db_type=_DbType.mysql,
+    )
+
     live_metrics_by_cluster: dict[str, dict[str, float]] = {}
     for cluster in clusters:
+        adapter = mysql_adapter if cluster.db_type == _DbType.mysql else es_adapter
+        live_metrics_list = _MYSQL_LIVE_METRICS if cluster.db_type == _DbType.mysql else _ES_LIVE_METRICS
         try:
             metrics = await adapter.get_latest_metrics(
                 cluster_id=cluster.cluster_id,
-                canonical_names=_LIVE_METRICS,
+                canonical_names=live_metrics_list,
             )
             live_metrics_by_cluster[cluster.cluster_id] = metrics
         except Exception as e:

@@ -8,10 +8,10 @@
 
 ## Current status
 
-**Phase:** Grafana Cloud Pull Adapter + End-to-End Verdict Pipeline
+**Phase:** Frontend Polish + Multi-Cluster Expansion
 **Plan document:** `_specs/plan-master.md`
-**Last updated:** April 14 2026 — Step 9 fully complete, all live metrics populating
-**Last session ended:** Step 9 complete with live CPU/storage/latency/throughput metrics
+**Last updated:** April 14 2026 — UI fixes, multi-cluster, and navigation improvements
+**Last session ended:** All 5 Alpha ES clusters live; overview page and detail page navigation fixed
 
 ---
 
@@ -22,14 +22,48 @@
 | 1 | Discovery — Grafana Cloud queries | Complete | Done manually, findings below |
 | 2 | Database schema and migrations | Complete | All tables created, normalisation map seeded, 21/21 tests pass |
 | 3 | Adapter interface and configuration | Complete | GrafanaCloudAdapter live-tested, all 9 Phase 1 metrics returning real values |
-| 4 | Baseline seeder | Complete | backend/app/baseline/seeder.py — 2d/5min/sequential |
-| 5 | Analyzer runner | Complete | backend/app/runner/analyzer_runner.py — live verdict written, status change detection works |
+| 4 | Baseline seeder | Complete | backend/app/baseline/seeder.py — 2d/5min/sequential, --all-alpha flag added |
+| 5 | Analyzer runner | Complete | backend/app/runner/analyzer_runner.py — live verdict written, status change detection works, --all-alpha flag added |
 | 6 | Verdict writer | Complete | backend/app/runner/llm_explainer.py — LLM called on status change, stored in llm_explanations |
 | 7 | Shard allocation failure analyzer | Complete | backend/app/analyzers/elasticsearch/shard_allocation.py — live, green/0 unassigned |
 | 8 | Thread pool saturation analyzer | Complete | backend/app/analyzers/elasticsearch/thread_pool_saturation.py — live, 0 rejections/queue |
-| 9 | Frontend API client | Complete | /dashboard/summary endpoint + useDashboard hook — all metrics live: memory 46%, storage 30%, latency 3.7ms, throughput 83qps |
+| 9 | Frontend API client | Complete | /dashboard/summary endpoint + useDashboard hook — all metrics live |
 | 10 | Internal admin views | Not started | |
 | 11 | End-to-end integration test | Not started | |
+
+---
+
+## Multi-cluster expansion (complete)
+
+All 5 Alpha Elasticsearch clusters seeded, baselined, and analyzed:
+
+| Cluster | Status | Notes |
+|---------|--------|-------|
+| els_shrdegt_alpha_va | good | No JVM metrics in Grafana for this cluster |
+| els_shrdone_alpha_va | good | All 3 analyzers healthy |
+| els_shrdsix_alpha_va | good | All 3 analyzers healthy |
+| els_shrdsvn_alpha_va | warning | JVM heap pressure above baseline (p50=62.97%) |
+| els_sixna_alpha_va | warning | JVM heap pressure above baseline (p50=61.6%) |
+
+Scripts:
+- `backend/scripts/seed_alpha_clusters.py` — inserts 4 additional clusters into DB
+- `backend/app/baseline/seeder.py --all-alpha` — seeds baselines for all 5
+- `backend/app/runner/analyzer_runner.py --all-alpha` — runs all analyzers for all 5
+
+---
+
+## Frontend changes (this session)
+
+### Bug fixes
+- **Mock data flash on overview page** — `useDashboard` now returns empty arrays during load instead of mock data; overview shows skeleton while loading
+- **"Database not found" flash on detail page** — detail page now shows spinner while `loading=true` instead of immediately rendering "not found"
+- **Healthy cluster section showed all clusters** — `filteredClusters` was using `databases` (all) instead of `healthy` when `showHealthy=true`
+- **Cluster IDs with `|` pipes broke URL routing** — `dashboard.py` now returns UUID as `id` (was returning `cluster_id` composite string); `databaseId` in issues also uses UUID
+
+### New features
+- **Stat strip navigation** — Total/Healthy/Need attention/Monthly cost numbers are now clickable buttons routing to `/databases`, `/databases?status=healthy`, `/databases?status=attention`, `/billing`
+- **DatabasesPage uses live data** — replaced `mockData` + `useScoredDatabases` with `useDashboard` hook
+- **Status filter on DatabasesPage** — `?status=healthy` or `?status=attention` query params filter cluster list; filter chip shown with × to clear
 
 ---
 

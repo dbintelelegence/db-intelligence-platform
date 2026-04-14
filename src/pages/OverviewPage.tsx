@@ -40,18 +40,24 @@ function StatStrip({ total, healthy, warning, critical, cost }: {
   total: number; healthy: number; warning: number; critical: number;
   cost: number;
 }) {
+  const navigate = useNavigate();
+  const stats = [
+    { label: 'Total clusters', value: total,              color: 'text-foreground',                                                                    href: '/databases' },
+    { label: 'Healthy',        value: healthy,            color: 'text-emerald-600 dark:text-emerald-400',                                             href: '/databases?status=healthy' },
+    { label: 'Need attention', value: warning + critical, color: warning + critical > 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground',        href: '/databases?status=attention' },
+    { label: 'Monthly cost',   value: formatCurrency(cost), color: 'text-foreground',                                                                  href: '/billing' },
+  ];
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      {[
-        { label: 'Total clusters', value: total, color: 'text-foreground' },
-        { label: 'Healthy',        value: healthy, color: 'text-emerald-600 dark:text-emerald-400' },
-        { label: 'Need attention', value: warning + critical, color: warning + critical > 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground' },
-        { label: 'Monthly cost',   value: formatCurrency(cost), color: 'text-foreground' },
-      ].map(s => (
-        <div key={s.label} className="bg-muted/50 rounded-lg px-4 py-3">
-          <p className="text-xs text-muted-foreground">{s.label}</p>
-          <p className={cn('text-2xl font-semibold mt-0.5', s.color)}>{s.value}</p>
-        </div>
+      {stats.map(s => (
+        <button
+          key={s.label}
+          onClick={() => navigate(s.href)}
+          className="bg-muted/50 rounded-lg px-4 py-3 text-left hover:bg-muted transition-colors group"
+        >
+          <p className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">{s.label}</p>
+          <p className={cn('text-2xl font-semibold mt-0.5 underline-offset-2 group-hover:underline', s.color)}>{s.value}</p>
+        </button>
       ))}
     </div>
   );
@@ -144,7 +150,7 @@ export function OverviewPage() {
 
   // Filtered cluster list for the right panel
   const filteredClusters = useMemo(() => {
-    const pool = showHealthy ? databases : needsAttention;
+    const pool = showHealthy ? healthy : needsAttention;
     if (!search.trim()) return pool;
     const q = search.toLowerCase();
     return pool.filter(db =>
@@ -155,6 +161,29 @@ export function OverviewPage() {
   }, [databases, needsAttention, showHealthy, search]);
 
   const allHealthy = needsAttention.length === 0;
+
+  if (loading && databases.length === 0) {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Loading clusters…</p>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[0,1,2,3].map(i => (
+            <div key={i} className="bg-muted/50 rounded-lg px-4 py-3 animate-pulse">
+              <div className="h-3 w-20 bg-muted rounded mb-2" />
+              <div className="h-7 w-12 bg-muted rounded" />
+            </div>
+          ))}
+        </div>
+        <div className="rounded-lg border bg-card p-6 flex items-center justify-center gap-3">
+          <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+          <p className="text-sm text-muted-foreground">Fetching cluster health…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">

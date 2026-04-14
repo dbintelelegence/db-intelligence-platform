@@ -35,6 +35,7 @@ from app.adapters.exceptions import (
 )
 from app.models.models import NormalisationMap, DbType, SourceType
 
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -104,6 +105,69 @@ CUSTOM_QUERIES: dict[str, str] = {
     ),
 }
 
+# ── MySQL constants ───────────────────────────────────────────────────────────
+
+MYSQL_ROLE_VALUE = "mysql"
+
+MYSQL_LABEL_FILTERS: dict[str, dict[str, str]] = {
+    # Disk: MySQL data lives on root mountpoint
+    "mysql.disk.total.bytes":     {"mountpoint": "/"},
+    "mysql.disk.available.bytes": {"mountpoint": "/"},
+}
+
+MYSQL_DERIVED_METRICS: dict[str, tuple[str, str, float]] = {}
+
+MYSQL_REQUIRED_AGGREGATION: dict[str, str] = {}
+
+MYSQL_CUSTOM_QUERIES: dict[str, str] = {
+    # Connection saturation %: avg(threads_connected / max_connections * 100) across instances
+    "mysql.connection.pct": (
+        'avg by (lp_cluster) ('
+        '  mysql_global_status_threads_connected{{{sel}}} / '
+        '  mysql_global_variables_max_connections{{{sel}}} * 100'
+        ')'
+    ),
+    # Slow query rate: irate of cumulative counter averaged across instances
+    "mysql.slow.query.rate": (
+        'avg by (lp_cluster) ('
+        '  irate(mysql_global_status_slow_queries{{{sel}}}[5m])'
+        ')'
+    ),
+    # Replication lag: max across all channels and instances (worst-case)
+    "mysql.replication.lag.seconds": (
+        'max by (lp_cluster) ('
+        '  mysql_slave_status_seconds_behind_master{{{sel}}}'
+        ')'
+    ),
+    # IO thread health: avg across instances (< 1.0 means at least one stopped)
+    "mysql.replication.io.running": (
+        'avg by (lp_cluster) ('
+        '  mysql_slave_status_slave_io_running{{{sel}}}'
+        ')'
+    ),
+    # SQL thread health: avg across instances
+    "mysql.replication.sql.running": (
+        'avg by (lp_cluster) ('
+        '  mysql_slave_status_slave_sql_running{{{sel}}}'
+        ')'
+    ),
+    # Buffer pool pressure: avg(buffer_pool) / avg(mem_available) * 100
+    # Metrics come from different exporters with different instance ports so
+    # we aggregate each separately by lp_cluster before dividing.
+    "mysql.buffer.pool.pressure.pct": (
+        'avg by (lp_cluster) (mysql_global_variables_innodb_buffer_pool_size{{{sel}}}) / '
+        'avg by (lp_cluster) (node_memory_MemAvailable_bytes{{{sel}}}) * 100'
+    ),
+    # CPU for MySQL nodes (same formula as ES)
+    "mysql.os.cpu.percent": (
+        'avg by (instance) ('
+        '  (1 - avg by (instance, cpu) ('
+        '    rate(node_cpu_seconds_total{{mode="idle",{sel}}}[5m])'
+        '  )) * 100'
+        ')'
+    ),
+}
+
 # Request timeout in seconds
 REQUEST_TIMEOUT = 30.0
 
@@ -163,11 +227,27 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         instance_id: str,
         api_key: str,
         db: AsyncSession,
+        db_type: DbType = DbType.elasticsearch,
     ) -> None:
         self._url = prometheus_url.rstrip("/")
         self._auth = (instance_id, api_key)
         self._db = db
+        self._db_type = db_type
         self._norm_cache: Optional[dict[str, dict]] = None  # raw_name -> {canonical, category, unit}
+
+        # Select the right constant sets for this db_type
+        if db_type == DbType.mysql:
+            self._role_value = MYSQL_ROLE_VALUE
+            self._label_filters = MYSQL_LABEL_FILTERS
+            self._derived_metrics = MYSQL_DERIVED_METRICS
+            self._required_aggregation = MYSQL_REQUIRED_AGGREGATION
+            self._custom_queries = MYSQL_CUSTOM_QUERIES
+        else:
+            self._role_value = ROLE_VALUE
+            self._label_filters = LABEL_FILTERS
+            self._derived_metrics = DERIVED_METRICS
+            self._required_aggregation = REQUIRED_AGGREGATION
+            self._custom_queries = CUSTOM_QUERIES
 
     # ── Normalisation map ─────────────────────────────────────────────────────
 
@@ -179,7 +259,7 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         result = await self._db.execute(
             select(NormalisationMap).where(
                 NormalisationMap.source_type == SourceType.grafana_cloud,
-                NormalisationMap.db_type == DbType.elasticsearch,
+                NormalisationMap.db_type == self._db_type,
                 NormalisationMap.is_active == True,
             )
         )
@@ -278,9 +358,9 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         now = int(datetime.now(timezone.utc).timestamp())
         one_hour_ago = now - 3600
 
-        # Find all series with lp_role="ElasticSearch"
+        # Find all series with the appropriate lp_role for this db_type
         data = await self._get("/api/v1/series", {
-            "match[]": f'{{{ROLE_LABEL}="{ROLE_VALUE}"}}',
+            "match[]": f'{{{ROLE_LABEL}="{self._role_value}"}}',
             "start": one_hour_ago,
             "end": now,
         })
@@ -344,13 +424,13 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         result: dict[str, float] = {}
 
         # Separate derived from direct metrics
-        direct_names = [n for n in canonical_names if n not in DERIVED_METRICS]
-        derived_names = [n for n in canonical_names if n in DERIVED_METRICS]
+        direct_names = [n for n in canonical_names if n not in self._derived_metrics]
+        derived_names = [n for n in canonical_names if n in self._derived_metrics]
 
         # Fetch all direct metrics (plus any raw inputs needed for derived)
         raw_inputs_needed: set[str] = set()
         for derived in derived_names:
-            num_can, den_can, _ = DERIVED_METRICS[derived]
+            num_can, den_can, _ = self._derived_metrics[derived]
             raw_inputs_needed.add(num_can)
             raw_inputs_needed.add(den_can)
 
@@ -364,7 +444,7 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
 
         # Compute derived metrics
         for derived in derived_names:
-            num_can, den_can, multiplier = DERIVED_METRICS[derived]
+            num_can, den_can, multiplier = self._derived_metrics[derived]
             num_val = raw_values.get(num_can)
             den_val = raw_values.get(den_can)
             if num_val is not None and den_val and den_val > 0:
@@ -393,7 +473,7 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         # Fire queries concurrently
         async def fetch_one(canonical: str) -> tuple[str, Optional[float]]:
             # Custom PromQL takes priority — no normalisation map lookup needed
-            custom_tmpl = CUSTOM_QUERIES.get(canonical)
+            custom_tmpl = self._custom_queries.get(canonical)
             if custom_tmpl:
                 query = custom_tmpl.format(sel=base_selector_inner)
                 try:
@@ -411,10 +491,10 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
             if not raw_name:
                 return canonical, None
 
-            extra_filters = LABEL_FILTERS.get(canonical, {})
+            extra_filters = self._label_filters.get(canonical, {})
             selector = cluster_selector(cluster_id, extra_filters)
             base = f'{raw_name}{selector}'
-            agg = REQUIRED_AGGREGATION.get(canonical)
+            agg = self._required_aggregation.get(canonical)
             query = f'{agg}({base})' if agg else base
 
             try:
@@ -462,8 +542,35 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         series_out: list[CanonicalMetricSeries] = []
 
         async def fetch_range(canonical: str) -> Optional[CanonicalMetricSeries]:
+            # Handle custom queries for range fetching
+            custom_tmpl = self._custom_queries.get(canonical)
+            if custom_tmpl:
+                base_selector_inner = cluster_selector(cluster_id)[1:-1]
+                query = custom_tmpl.format(sel=base_selector_inner)
+                try:
+                    data = await self._get("/api/v1/query_range", {
+                        "query": query,
+                        "start": start_ts,
+                        "end": end_ts,
+                        "step": f"{step_seconds}s",
+                    })
+                    results = data.get("data", {}).get("result", [])
+                    if not results:
+                        return None
+                    points = [
+                        MetricPoint(
+                            timestamp=datetime.fromtimestamp(float(ts), tz=timezone.utc),
+                            value=float(val),
+                        )
+                        for ts, val in results[0].get("values", [])
+                    ]
+                    return CanonicalMetricSeries(canonical_name=canonical, cluster_id=cluster_id, points=points)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch custom range for {canonical}: {e}")
+                    return None
+
             # Handle derived metrics
-            if canonical in DERIVED_METRICS:
+            if canonical in self._derived_metrics:
                 return await self._fetch_derived_range(
                     cluster_id, canonical, start_ts, end_ts, step_seconds, norm
                 )
@@ -475,11 +582,11 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
                 logger.warning(f"No raw metric found for canonical: {canonical}")
                 return None
 
-            extra_filters = LABEL_FILTERS.get(canonical, {})
+            extra_filters = self._label_filters.get(canonical, {})
             selector = cluster_selector(cluster_id, extra_filters)
             unit = norm[raw_name]["unit"]
             category = norm[raw_name]["category"]
-            agg = REQUIRED_AGGREGATION.get(canonical)
+            agg = self._required_aggregation.get(canonical)
 
             if agg:
                 # Metric requires a specific aggregation (e.g. pre-aggregated by Grafana Cloud)
@@ -533,15 +640,15 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
         norm: dict,
     ) -> Optional[CanonicalMetricSeries]:
         """Fetch and compute a derived metric over a time range."""
-        num_can, den_can, multiplier = DERIVED_METRICS[canonical]
+        num_can, den_can, multiplier = self._derived_metrics[canonical]
 
         num_raw = next((r for r, m in norm.items() if m["canonical_name"] == num_can), None)
         den_raw = next((r for r, m in norm.items() if m["canonical_name"] == den_can), None)
         if not num_raw or not den_raw:
             return None
 
-        num_filters = LABEL_FILTERS.get(num_can, {})
-        den_filters = LABEL_FILTERS.get(den_can, {})
+        num_filters = self._label_filters.get(num_can, {})
+        den_filters = self._label_filters.get(den_can, {})
         num_sel = cluster_selector(cluster_id, num_filters)
         den_sel = cluster_selector(cluster_id, den_filters)
 

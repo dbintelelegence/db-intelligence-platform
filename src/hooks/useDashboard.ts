@@ -50,11 +50,13 @@ export function useDashboard(): UseDashboardResult {
 
   const refresh = useCallback(() => setTick(t => t + 1), []);
 
-  // While loading or on error, fall back to mock data so the UI is never blank.
-  // Once real data arrives it replaces the mock seamlessly.
+  // On error only (not during loading), fall back to mock data so dev/offline
+  // workflows still show something useful. During loading, return empty arrays
+  // so pages can show a skeleton instead of a mock-data flash.
+  const useMock = !loading && !!error && !data;
   return {
-    clusters:    data?.clusters ?? (mockData.databases as Database[]),
-    issues:      data?.issues   ?? (mockData.issues   as Issue[]),
+    clusters:    data?.clusters ?? (useMock ? (mockData.databases as Database[]) : []),
+    issues:      data?.issues   ?? (useMock ? (mockData.issues   as Issue[])   : []),
     loading,
     error,
     lastFetched,
