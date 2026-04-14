@@ -115,7 +115,7 @@ function ClusterRow({ db }: { db: Database }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function OverviewPage() {
-  const { clusters: rawClusters, issues: allIssues, loading, error, lastFetched, refresh } = useDashboard();
+  const { clusters: rawClusters, issues: allIssues, loading, error, lastFetched } = useDashboard();
   // Backend is the scoring authority — use its healthScore/healthStatus directly.
   // useScoredDatabases is for mock data only.
   const databases = rawClusters;
