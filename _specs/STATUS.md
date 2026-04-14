@@ -1,8 +1,5 @@
 # DB Intelligence Platform — Session Status
 
-> This file is written and read by Claude Code at the start and end
-> of every session. It is the memory that persists between sessions.
->
 > Claude Code: Read this file BEFORE reading the plan document.
 > Update this file WHENEVER a step completes, something is discovered,
 > or a session ends for any reason.
@@ -13,8 +10,8 @@
 
 **Phase:** Grafana Cloud Pull Adapter + End-to-End Verdict Pipeline
 **Plan document:** `_specs/plan-master.md`
-**Last updated:** [Claude Code fills this in]
-**Last session ended:** [Claude Code fills this in]
+**Last updated:** April 13 2026 — manual discovery session complete
+**Last session ended:** Manual discovery done, ready for Step 2
 
 ---
 
@@ -22,7 +19,7 @@
 
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
-| 1 | Discovery — run Grafana Cloud queries | Not started | Must complete before any code |
+| 1 | Discovery — Grafana Cloud queries | Complete | Done manually, findings below |
 | 2 | Database schema and migrations | Not started | |
 | 3 | Adapter interface and configuration | Not started | |
 | 4 | Baseline seeder | Not started | |
@@ -34,154 +31,160 @@
 | 10 | Internal admin views | Not started | |
 | 11 | End-to-end integration test | Not started | |
 
-**Status values:** Not started | In progress | Complete | Blocked
+---
+
+## Next action
+
+Step 2 — Schema. Read backend/app/models/models.py and compare
+to plan-master.md Section 11. Show a diff of what needs to change
+and what new tables need to be added. Do not write any files until
+the diff is reviewed and approved.
+
+Before writing the adapter (Step 3), resolve the two blockers listed
+at the bottom of this file.
 
 ---
 
-## What is currently in progress
+## Step 1 — Discovery COMPLETE
 
-[Claude Code fills this in when a session ends mid-step]
+### Grafana Cloud connection
+- URL: https://prometheus-us-central1.grafana.net/api/prom
+- Instance ID: 908263
+- Stack: GCP PROD DB
+- Auth: Basic auth with instance_id:api_key
 
-**Step:** —
-**File being worked on:** —
-**State of that file:** —
-**Exact next action:** —
+### Label hierarchy — CRITICAL, updates required to plan-master.md
+The plan assumed a single cluster label. Reality is a hierarchy:
+
+  lp_role      = "ElasticSearch"              engine type
+  lp_segment   = "Alpha" | "Prod"             environment
+  datacenter   = "GCP-Alpha" | "GCP-US-PROD"  region
+  lp_cluster   = "els_shrdone_alpha_va" etc   cluster name
+  instance     = individual node hostname
+
+Unique cluster identity = lp_segment + datacenter + lp_cluster
+NOT just lp_cluster alone — same name can exist in multiple segments.
+
+### All database roles in fleet (lp_role values)
+ElasticSearch, opensearch, mysql, mongodb, couchbase, cassandra,
+redis, vertica, kafka, kafka_zookeeper, zookeeper, metadefender
+
+Note: Both ElasticSearch AND opensearch are present in the fleet.
+OpenSearch is AWS fork — similar metrics, may have naming differences.
+Phase 1 targets ElasticSearch only.
+
+### Environments found
+Alpha, Prod
+
+### Elasticsearch clusters (19 total)
+
+Alpha (5):
+  els_shrdegt_alpha_va
+  els_shrdone_alpha_va
+  els_shrdsix_alpha_va
+  els_shrdsvn_alpha_va
+  els_sixna_alpha_va
+
+Prod (14):
+  elast_chat_prod, els_aiwb_prod, els_audit_prod, els_chat_prod,
+  els_intnt_prod, els_kai_prod, els_kf2es_prod, els_main_prod,
+  els_mia2_gis_lmsthd_tmo_vz_prod, els_mia3_anthem_prod,
+  els_mia_prod, els_reprt_prod, els_shrd7_prod, els_voice8_prod
+
+### Datacenters
+GCP-APAC-PROD, GCP-Alpha, GCP-EMEA-PROD, GCP-US-PROD,
+australia-southeast1, europe-west1, us-east1
+
+### Exporter confirmed
+prometheus-community/elasticsearch_exporter
+Prefix: elasticsearch_ — clean standard names, no exotic variants
+
+### Prototype scope
+Start with ONE cluster: els_shrdone_alpha_va (Alpha environment)
+Validate all analyzers against this cluster before expanding.
 
 ---
 
-## Completed work — details
+## Metric normalisation map (confirmed from els_shrdone_alpha_va)
 
-[Claude Code fills this in as steps complete]
+### JVM Heap Pressure analyzer
+CRITICAL: jvm.heap.used.percent is a DERIVED metric — not directly
+available. Must compute:
+  elasticsearch_jvm_memory_used_bytes{area="heap"} /
+  elasticsearch_jvm_memory_max_bytes{area="heap"} * 100
 
-### Step 1 — Discovery
-**Status:** Not started
-**Findings:** —
+Direct metrics:
+  elasticsearch_jvm_memory_used_bytes       → jvm.heap.used.bytes
+  elasticsearch_jvm_memory_max_bytes        → jvm.heap.max.bytes
+  elasticsearch_jvm_gc_collection_seconds_sum   → gc.old.collection.seconds
+  elasticsearch_jvm_gc_collection_seconds_count → gc.old.collection.count
 
-### Step 2 — Schema
-**Status:** Not started
-**Migration name:** —
-**Tables created:** —
+Note: GC metrics have a collector label (old/young) — must filter
+by collector="old" for old-gen analysis. UNVERIFIED — see blockers.
 
-### Step 3 — Adapters
-**Status:** Not started
-**Tests passing:** —
+### Shard Allocation analyzer
+  elasticsearch_cluster_health_unassigned_shards   → cluster.shards.unassigned
+  elasticsearch_cluster_health_status              → cluster.health.status
+  elasticsearch_cluster_health_relocating_shards   → cluster.shards.relocating
+  elasticsearch_cluster_health_initializing_shards → cluster.shards.initializing
+  elasticsearch_cluster_health_active_shards       → cluster.shards.active
 
-### Step 4 — Baseline seeder
-**Status:** Not started
-**Validated against:** —
+### Thread Pool analyzer
+  elasticsearch_thread_pool_rejected_count → thread_pool.write.rejected
+  elasticsearch_thread_pool_queue_count    → thread_pool.write.queue
+  elasticsearch_thread_pool_active_count   → thread_pool.write.active
 
-### Step 5 — Analyzer runner
-**Status:** Not started
-**First verdict at:** —
+Note: thread_pool metrics have a type label — must filter by
+type="write" and type="search". UNVERIFIED — see blockers.
 
-### Step 6 — Verdict writer
-**Status:** Not started
-**LLM trigger confirmed:** —
-
-### Step 7 — Shard allocation analyzer
-**Status:** Not started
-**Tests:** —/— passing
-
-### Step 8 — Thread pool analyzer
-**Status:** Not started
-**Tests:** —/— passing
-
-### Step 9 — Frontend API client
-**Status:** Not started
-**Mock data removed from:** —
-
-### Step 10 — Admin views
-**Status:** Not started
-
-### Step 11 — Integration test
-**Status:** Not started
+### Additional metrics for future analyzers
+  elasticsearch_indices_fielddata_evictions        → fielddata eviction signal
+  elasticsearch_indices_fielddata_memory_size_bytes → fielddata cache size
+  elasticsearch_indices_search_query_time_seconds  → search latency
+  elasticsearch_indices_search_query_total         → search throughput
+  elasticsearch_indices_indexing_index_total       → indexing throughput
+  elasticsearch_breakers_tripped                   → circuit breaker trips
+  node_filesystem_avail_bytes                      → disk available
+  node_filesystem_size_bytes                       → disk total
+  node_cpu_seconds_total                           → CPU usage
 
 ---
 
-## Discoveries and deviations
+## Discoveries and deviations from plan
 
-[Claude Code fills this in when something unexpected is found
-during implementation that the plan did not anticipate]
+1. Cluster identity is a composite key (lp_segment + datacenter +
+   lp_cluster), not a single label. The stacks table and adapter
+   must reflect this.
 
-Things that were different from what the plan assumed:
-- [None yet]
+2. jvm.heap.used.percent is a derived metric requiring computation
+   from two source metrics. The normalisation layer needs a derived
+   metric concept — not just 1:1 name mapping.
 
-Decisions made during implementation that deviated from the plan:
-- [None yet]
+3. thread_pool and gc metrics have sub-type labels (type="write",
+   collector="old") that must be included in PromQL queries.
+   The adapter cannot fetch by metric name alone.
+
+4. Both ElasticSearch and opensearch roles exist in the fleet.
+   The adapter must not assume these are the same engine.
+
+5. node_exporter metrics are co-located with ES metrics under the
+   same lp_role label. Useful for disk and CPU analyzers later.
 
 ---
 
 ## Blockers
 
-[Claude Code fills this in when something requires a human
-decision before work can continue]
-
-| Blocker | Step affected | What is needed | Raised at |
-|---------|--------------|----------------|-----------|
-| None | — | — | — |
-
----
-
-## DISCOVERY_NOTES summary
-
-[Claude Code fills this in after Step 1 completes]
-
-**Grafana Cloud Prometheus URL:** —
-**Cluster label key:** —
-**Sample cluster IDs found:** —
-
-**Metric names confirmed for jvm_heap_pressure analyzer:**
-- jvm.heap.used.percent source name: —
-- gc.old.collection.seconds source name: —
-- gc.old.collection.count source name: —
-
-**Metric names confirmed for shard_allocation_failure analyzer:**
-- cluster.shards.unassigned source name: —
-- cluster.health.status source name: —
-
-**Metric names confirmed for thread_pool_saturation analyzer:**
-- thread_pool.write.rejected source name: —
-- thread_pool.write.queue source name: —
-
-**Unmapped metrics found:** —
-**30-day data point count (sample metric):** —
+| Blocker | Step | What is needed |
+|---------|------|----------------|
+| GC collector label values unverified | Step 3 | curl match[]={lp_cluster="els_shrdone_alpha_va",__name__="elasticsearch_jvm_gc_collection_seconds_count"} — confirm collector label values |
+| Thread pool type label values unverified | Step 3 | curl match[]={lp_cluster="els_shrdone_alpha_va",__name__="elasticsearch_thread_pool_rejected_count"} — confirm type label values |
 
 ---
 
 ## Test suite status
 
-[Claude Code updates after every test run]
-
-```
-Last run: [date]
-backend/tests/test_analyzers/test_jvm_heap_pressure.py    21/21 ✓
-backend/tests/test_analyzers/test_shard_allocation.py     —/—
-backend/tests/test_analyzers/test_thread_pool.py          —/—
-backend/tests/test_adapters/test_grafana_cloud.py         —/—
-backend/tests/test_runner/test_verdict_writer.py          —/—
-```
-
----
-
-## How to resume this session
-
-Read this file. Then read `_specs/plan-master.md`.
-
-The next action is:
-
-**[Claude Code fills in the exact next action with enough
-specificity that no clarifying questions are needed]**
-
-Example of what good looks like:
-> "Step 3 is in progress. GrafanaCloudAdapter is created in
-> backend/app/adapters/grafana_cloud/adapter.py. The
-> get_clusters() and get_latest_metrics() methods are complete
-> and tested. The get_metrics() method (time range query) is
-> not yet implemented. Start by implementing get_metrics() in
-> adapter.py line 87 where the TODO comment is. Then run
-> pytest tests/test_adapters/test_grafana_cloud.py to verify."
-
----
-
-*This file is maintained by Claude Code — do not edit manually
-unless correcting an error left by a previous session.*
+  backend/tests/test_analyzers/test_jvm_heap_pressure.py    21/21 ✓
+  backend/tests/test_analyzers/test_shard_allocation.py     not built
+  backend/tests/test_analyzers/test_thread_pool.py          not built
+  backend/tests/test_adapters/test_grafana_cloud.py         not built
+  backend/tests/test_runner/test_verdict_writer.py          not built
