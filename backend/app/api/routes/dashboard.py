@@ -261,8 +261,9 @@ _MYSQL_LIVE_METRICS = [
     "mysql.disk.total.bytes",         # node_exporter: root mountpoint
     "mysql.disk.available.bytes",     # node_exporter: root mountpoint
     "mysql.replication.lag.seconds",  # CUSTOM_QUERY: max across channels
-    "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_available*100
+    "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_total*100
     "mysql.buffer.pool.bytes",        # raw buffer pool size
+    "mysql.memory.total.bytes",       # node_exporter: total host RAM
 ]
 
 

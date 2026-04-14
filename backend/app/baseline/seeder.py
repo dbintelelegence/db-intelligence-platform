@@ -99,8 +99,9 @@ MYSQL_METRICS = [
     "mysql.replication.io.running",   # CUSTOM_QUERY: avg across instances
     "mysql.replication.sql.running",  # CUSTOM_QUERY: avg across instances
     # InnoDB buffer pool pressure analyzer
-    "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_available*100
+    "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_total*100
     "mysql.buffer.pool.bytes",
+    "mysql.memory.total.bytes",
     "mysql.memory.available.bytes",
     # Corroborating
     "mysql.slow.query.rate",          # CUSTOM_QUERY: irate of slow_queries

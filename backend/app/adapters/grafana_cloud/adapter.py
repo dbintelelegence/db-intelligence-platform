@@ -151,22 +151,27 @@ MYSQL_CUSTOM_QUERIES: dict[str, str] = {
         '  mysql_slave_status_slave_sql_running{{{sel}}}'
         ')'
     ),
-    # Buffer pool pressure per instance: buffer_pool_size / mem_available * 100.
+    # Buffer pool pressure per instance: buffer_pool_size / mem_total * 100.
+    # Measures what fraction of total host RAM is allocated to the buffer pool —
+    # the relevant question for configuration sizing (recommended ceiling: 75-80%).
     # mysqld_exporter runs on :14402, node_exporter on :14401 — instance labels differ by port.
     # label_replace strips the port to get a bare hostname, enabling per-host vector matching.
-    # Returns one series per instance (lp_instance label preserved) so the analyzer can
-    # write one verdict per node.
+    # Returns one series per instance so the analyzer writes one verdict per node.
     "mysql.buffer.pool.pressure.pct": (
         'label_replace(mysql_global_variables_innodb_buffer_pool_size{{{sel}}}, "host", "$1", "instance", "(.+):\\\\d+") '
         '/ on(host) group_left(lp_instance) '
-        'label_replace(node_memory_MemAvailable_bytes{{{sel}}}, "host", "$1", "instance", "(.+):\\\\d+") '
+        'label_replace(node_memory_MemTotal_bytes{{{sel}}}, "host", "$1", "instance", "(.+):\\\\d+") '
         '* 100'
     ),
     # Raw buffer pool size per instance (for evidence text)
     "mysql.buffer.pool.bytes": (
         'mysql_global_variables_innodb_buffer_pool_size{{{sel}}}'
     ),
-    # Available RAM per instance (for evidence text)
+    # Total RAM per instance (for evidence text)
+    "mysql.memory.total.bytes": (
+        'node_memory_MemTotal_bytes{{{sel}}}'
+    ),
+    # Available RAM per instance (secondary signal — how much is currently free)
     "mysql.memory.available.bytes": (
         'node_memory_MemAvailable_bytes{{{sel}}}'
     ),
