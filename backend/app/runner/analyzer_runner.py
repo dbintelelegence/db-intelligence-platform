@@ -47,12 +47,19 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-# ── Target cluster ────────────────────────────────────────────────────────────
+# ── Target clusters ───────────────────────────────────────────────────────────
 
-CLUSTER_COMPOSITE_ID = "Alpha|us-east1|els_shrdone_alpha_va"
+DEFAULT_CLUSTER_ID = "Alpha|us-east1|els_shrdone_alpha_va"
+
+ALL_ALPHA_CLUSTERS = [
+    "Alpha|us-east1|els_shrdegt_alpha_va",
+    "Alpha|us-east1|els_shrdone_alpha_va",
+    "Alpha|us-east1|els_shrdsix_alpha_va",
+    "Alpha|us-east1|els_shrdsvn_alpha_va",
+    "Alpha|us-east1|els_sixna_alpha_va",
+]
 
 # ── Registered analyzers ──────────────────────────────────────────────────────
-# Add new analyzers here as Steps 7-8 are built.
 
 ANALYZERS = [
     JvmHeapPressureAnalyzer(),
@@ -151,33 +158,100 @@ def _worst_status(*statuses: HealthStatus) -> HealthStatus:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def run() -> None:
+async def run_cluster(db, adapter: GrafanaCloudAdapter, cluster_composite_id: str, run_at: datetime) -> None:
+    """Run a full analysis cycle for a single cluster."""
+    logger.info(f"\n── Analyzing {cluster_composite_id} ──")
+
+    # 1. Resolve composite string key → UUID
+    stmt = select(Cluster).where(Cluster.cluster_id == cluster_composite_id)
+    cluster = (await db.execute(stmt)).scalar_one_or_none()
+    if cluster is None:
+        logger.error(f"Cluster not found in DB: {cluster_composite_id}")
+        return
+    cluster_uuid = cluster.id
+
+    # 2. Collect all metrics needed
+    all_metrics_needed: set[str] = set()
+    for analyzer in ANALYZERS:
+        all_metrics_needed.update(analyzer.REQUIRED_METRICS)
+        if hasattr(analyzer, "CORROBORATING_METRICS"):
+            all_metrics_needed.update(analyzer.CORROBORATING_METRICS)
+
+    # 3. Fetch live metrics
+    metrics = await adapter.get_latest_metrics(
+        cluster_id=cluster_composite_id,
+        canonical_names=list(all_metrics_needed),
+    )
+    if not metrics:
+        logger.warning(f"No metrics returned for {cluster_composite_id} — skipping")
+        return
+    logger.info(f"  Metrics: {list(metrics.keys())}")
+
+    # 4. Load baselines
+    baselines = await get_baselines_for_cluster(db, cluster_composite_id, WINDOW_ALL)
+    logger.info(f"  Baselines: {len(baselines)} profiles")
+
+    log_signals: dict[str, int] = {}
+    all_statuses: list[HealthStatus] = []
+
+    # 5. Run analyzers
+    for analyzer in ANALYZERS:
+        available = set(metrics.keys())
+        if not analyzer.can_run(available):
+            missing = set(analyzer.REQUIRED_METRICS) - available
+            logger.warning(f"  [{analyzer.ANALYZER_NAME}] Cannot run — missing: {missing}")
+            continue
+
+        result = analyzer.analyze(
+            metrics=metrics,
+            baselines=baselines,
+            log_signals=log_signals,
+            metric_ts=run_at,
+        )
+
+        prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME)
+        verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
+
+        status_changed = prev_status != result.status
+        logger.info(
+            f"  [{analyzer.ANALYZER_NAME}] "
+            f"status={result.status.value}  confidence={result.confidence.value}  "
+            f"prev={prev_status.value if prev_status else 'none'}  "
+            f"changed={'YES' if status_changed else 'no'}"
+        )
+
+        if status_changed:
+            prev_label = prev_status.value if prev_status else "none"
+            trigger = f"status changed from {prev_label} to {result.status.value}"
+            await generate_explanation(
+                db=db,
+                verdict_id=verdict.id,
+                result=result,
+                prev_status=prev_status,
+                cluster_display_name=cluster.display_name,
+                trigger_reason=trigger,
+            )
+
+        all_statuses.append(result.status)
+
+    # 6. Update cluster status
+    if all_statuses:
+        worst = _worst_status(*all_statuses)
+        await _update_cluster_status(db, cluster_uuid, worst)
+        logger.info(f"  Status → {worst.value}")
+
+    await db.commit()
+
+
+async def run(cluster_ids: list[str]) -> None:
     run_at = datetime.now(timezone.utc)
 
     logger.info("Analyzer runner starting")
-    logger.info(f"  Cluster:   {CLUSTER_COMPOSITE_ID}")
+    logger.info(f"  Clusters:  {len(cluster_ids)}")
     logger.info(f"  Analyzers: {[a.ANALYZER_NAME for a in ANALYZERS]}")
     logger.info(f"  Run at:    {run_at.isoformat()}")
 
     async with AsyncSessionLocal() as db:
-        # 1. Resolve composite string key → UUID (needed for FK on verdicts)
-        stmt = select(Cluster).where(Cluster.cluster_id == CLUSTER_COMPOSITE_ID)
-        cluster = (await db.execute(stmt)).scalar_one_or_none()
-        if cluster is None:
-            logger.error(f"Cluster not found in DB: {CLUSTER_COMPOSITE_ID}")
-            sys.exit(1)
-        cluster_uuid = cluster.id
-        logger.info(f"  Cluster UUID: {cluster_uuid}")
-
-        # 2. Collect all metrics needed across all registered analyzers
-        all_metrics_needed: set[str] = set()
-        for analyzer in ANALYZERS:
-            all_metrics_needed.update(analyzer.REQUIRED_METRICS)
-            # Include corroborating metrics if the analyzer declares them
-            if hasattr(analyzer, "CORROBORATING_METRICS"):
-                all_metrics_needed.update(analyzer.CORROBORATING_METRICS)
-
-        # 3. Fetch current metric values from Grafana Cloud
         adapter = GrafanaCloudAdapter(
             prometheus_url=settings.grafana_gcp_prod_url,
             instance_id=settings.grafana_gcp_prod_instance_id,
@@ -185,86 +259,18 @@ async def run() -> None:
             db=db,
         )
 
-        logger.info(f"Fetching {len(all_metrics_needed)} metrics from Grafana Cloud ...")
-        metrics = await adapter.get_latest_metrics(
-            cluster_id=CLUSTER_COMPOSITE_ID,
-            canonical_names=list(all_metrics_needed),
-        )
-        logger.info(f"  Received: {list(metrics.keys())}")
+        for cluster_id in cluster_ids:
+            await run_cluster(db, adapter, cluster_id, run_at)
 
-        if not metrics:
-            logger.error("No metrics returned — aborting run")
-            sys.exit(1)
-
-        # 4. Load baseline profiles for this cluster (all-window)
-        baselines = await get_baselines_for_cluster(db, CLUSTER_COMPOSITE_ID, WINDOW_ALL)
-        logger.info(f"  Baselines loaded: {len(baselines)} profiles")
-
-        # No log signals in Phase 1 — pass empty dict
-        log_signals: dict[str, int] = {}
-
-        # 5. Run each analyzer
-        all_statuses: list[HealthStatus] = []
-
-        for analyzer in ANALYZERS:
-            available = set(metrics.keys())
-            if not analyzer.can_run(available):
-                missing = set(analyzer.REQUIRED_METRICS) - available
-                logger.warning(
-                    f"[{analyzer.ANALYZER_NAME}] Cannot run — missing metrics: {missing}"
-                )
-                continue
-
-            logger.info(f"[{analyzer.ANALYZER_NAME}] Running ...")
-            result = analyzer.analyze(
-                metrics=metrics,
-                baselines=baselines,
-                log_signals=log_signals,
-                metric_ts=run_at,
-            )
-
-            # Fetch previous verdict status for change detection
-            prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME)
-
-            # Write verdict (append-only)
-            verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
-
-            status_changed = prev_status != result.status
-            logger.info(
-                f"[{analyzer.ANALYZER_NAME}] "
-                f"status={result.status.value}  "
-                f"confidence={result.confidence.value}  "
-                f"prev={prev_status.value if prev_status else 'none'}  "
-                f"changed={'YES' if status_changed else 'no'}"
-            )
-
-            for ev in result.evidence:
-                logger.info(f"  evidence: {ev.text}")
-
-            if status_changed:
-                prev_label = prev_status.value if prev_status else "none"
-                trigger = f"status changed from {prev_label} to {result.status.value}"
-                logger.info(f"  [STATUS CHANGE] {trigger} — generating LLM explanation")
-                await generate_explanation(
-                    db=db,
-                    verdict_id=verdict.id,
-                    result=result,
-                    prev_status=prev_status,
-                    cluster_display_name=cluster.display_name,
-                    trigger_reason=trigger,
-                )
-
-            all_statuses.append(result.status)
-
-        # 6. Update denormalised cluster status to worst across all analyzers
-        if all_statuses:
-            worst = _worst_status(*all_statuses)
-            await _update_cluster_status(db, cluster_uuid, worst)
-            logger.info(f"Cluster status updated → {worst.value}")
-
-        await db.commit()
-        logger.info("Run complete — verdicts committed")
+    logger.info("\nAll clusters done.")
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    if "--all-alpha" in sys.argv:
+        clusters = ALL_ALPHA_CLUSTERS
+    elif len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
+        clusters = [sys.argv[1]]
+    else:
+        clusters = [DEFAULT_CLUSTER_ID]
+
+    asyncio.run(run(clusters))
