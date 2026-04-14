@@ -33,7 +33,9 @@ from app.analyzers.elasticsearch.shard_allocation import ShardAllocationAnalyzer
 from app.analyzers.elasticsearch.thread_pool_saturation import ThreadPoolSaturationAnalyzer
 from app.analyzers.mysql.connection_pool_saturation import ConnectionPoolSaturationAnalyzer
 from app.analyzers.mysql.replication_lag import ReplicationLagAnalyzer
-from app.analyzers.mysql.innodb_buffer_pool_pressure import InnodbBufferPoolPressureAnalyzer
+from app.analyzers.mysql.innodb_buffer_pool_pressure import (
+    InnodbBufferPoolPressureAnalyzer, PER_INSTANCE_METRICS,
+)
 from app.baseline.engine import WINDOW_ALL, get_baselines_for_cluster
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
@@ -95,16 +97,21 @@ async def _get_prev_status(
     db,
     cluster_uuid,
     analyzer_name: str,
+    instance_id: str | None = None,
 ) -> HealthStatus | None:
-    """Fetch the most recent verdict status for this cluster + analyzer."""
+    """Fetch the most recent verdict status for this cluster + analyzer (+ instance if set)."""
+    conditions = [
+        Verdict.cluster_id == cluster_uuid,
+        Verdict.analyzer_name == analyzer_name,
+    ]
+    if instance_id is not None:
+        conditions.append(Verdict.instance_id == instance_id)
+    else:
+        conditions.append(Verdict.instance_id.is_(None))
+
     stmt = (
         select(Verdict.status)
-        .where(
-            and_(
-                Verdict.cluster_id == cluster_uuid,
-                Verdict.analyzer_name == analyzer_name,
-            )
-        )
+        .where(and_(*conditions))
         .order_by(desc(Verdict.run_at))
         .limit(1)
     )
@@ -122,18 +129,18 @@ async def _write_verdict(
     """Insert a new verdict row with evidence items. Never updates existing rows."""
     now = datetime.now(timezone.utc)
 
-    # Compute lag: time between when ES produced the metric and when we ran
     lag_seconds = None
     freshness = DataFreshness.fresh
     if result.metric_ts:
         lag = (run_at - result.metric_ts).total_seconds()
         lag_seconds = int(lag)
         if lag > 300:
-            freshness = DataFreshness.stale
+            freshness = DataFreshness.delayed
 
     verdict = Verdict(
         cluster_id=cluster_uuid,
         analyzer_name=result.analyzer_name,
+        instance_id=result.instance_id,
         status=result.status,
         prev_status=prev_status,
         observed=result.observed,
@@ -237,37 +244,58 @@ async def run_cluster(db, cluster_composite_id: str, run_at: datetime) -> None:
             logger.warning(f"  [{analyzer.ANALYZER_NAME}] Cannot run — missing: {missing}")
             continue
 
-        result = analyzer.analyze(
+        # Per-instance analyzers get their data fetched separately
+        per_instance: dict | None = None
+        if isinstance(analyzer, InnodbBufferPoolPressureAnalyzer):
+            try:
+                per_instance = await adapter.get_latest_metrics_per_instance(
+                    cluster_id=cluster_composite_id,
+                    canonical_names=PER_INSTANCE_METRICS,
+                )
+                logger.info(f"  [{analyzer.ANALYZER_NAME}] Per-instance data: {list(per_instance.keys())}")
+            except Exception as e:
+                logger.warning(f"  [{analyzer.ANALYZER_NAME}] Per-instance fetch failed: {e} — falling back to cluster avg")
+
+        analyze_kwargs = dict(
             metrics=metrics,
             baselines=baselines,
             log_signals=log_signals,
             metric_ts=run_at,
         )
+        if per_instance is not None:
+            analyze_kwargs["per_instance_metrics"] = per_instance
 
-        prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME)
-        verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
+        raw = analyzer.analyze(**analyze_kwargs)
 
-        status_changed = prev_status != result.status
-        logger.info(
-            f"  [{analyzer.ANALYZER_NAME}] "
-            f"status={result.status.value}  confidence={result.confidence.value}  "
-            f"prev={prev_status.value if prev_status else 'none'}  "
-            f"changed={'YES' if status_changed else 'no'}"
-        )
+        # Analyzers may return a single VerdictResult or a list (per-instance)
+        results = raw if isinstance(raw, list) else [raw]
 
-        if status_changed:
-            prev_label = prev_status.value if prev_status else "none"
-            trigger = f"status changed from {prev_label} to {result.status.value}"
-            await generate_explanation(
-                db=db,
-                verdict_id=verdict.id,
-                result=result,
-                prev_status=prev_status,
-                cluster_display_name=cluster.display_name,
-                trigger_reason=trigger,
+        for result in results:
+            instance_label = f" [{result.instance_id}]" if result.instance_id else ""
+            prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME, result.instance_id)
+            verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
+
+            status_changed = prev_status != result.status
+            logger.info(
+                f"  [{analyzer.ANALYZER_NAME}]{instance_label} "
+                f"status={result.status.value}  confidence={result.confidence.value}  "
+                f"prev={prev_status.value if prev_status else 'none'}  "
+                f"changed={'YES' if status_changed else 'no'}"
             )
 
-        all_statuses.append(result.status)
+            if status_changed:
+                prev_label = prev_status.value if prev_status else "none"
+                trigger = f"status changed from {prev_label} to {result.status.value}"
+                await generate_explanation(
+                    db=db,
+                    verdict_id=verdict.id,
+                    result=result,
+                    prev_status=prev_status,
+                    cluster_display_name=cluster.display_name,
+                    trigger_reason=trigger,
+                )
+
+            all_statuses.append(result.status)
 
     # 6. Update cluster status
     if all_statuses:

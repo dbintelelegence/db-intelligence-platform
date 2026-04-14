@@ -332,16 +332,18 @@ class AnalyzerCapabilityMap(Base):
 
 class Verdict(Base):
     """
-    Append-only. One row per analyzer per cluster per run.
+    Append-only. One row per analyzer per cluster (or per instance) per run.
     Never update — always insert a new row.
     The timeline of status changes is reconstructed by querying this table
-    ordered by run_at for a given cluster + analyzer.
+    ordered by run_at for a given cluster + analyzer (+ instance_id if set).
     """
     __tablename__ = "verdicts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False)
     analyzer_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Set for per-instance verdicts (e.g. MySQL buffer pool per node). None = cluster-level.
+    instance_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     status: Mapped[HealthStatus] = mapped_column(SAEnum(HealthStatus), nullable=False)
     # Previous status — used to detect status changes and trigger LLM
@@ -369,7 +371,7 @@ class Verdict(Base):
     llm_explanation: Mapped["LlmExplanation | None"] = relationship(back_populates="verdict", uselist=False, cascade="all, delete-orphan")
 
     __table_args__ = (
-        Index("ix_verdicts_cluster_analyzer_run", "cluster_id", "analyzer_name", "run_at"),
+        Index("ix_verdicts_cluster_analyzer_instance_run", "cluster_id", "analyzer_name", "instance_id", "run_at"),
         Index("ix_verdicts_cluster_status", "cluster_id", "status"),
     )
 

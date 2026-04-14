@@ -151,12 +151,24 @@ MYSQL_CUSTOM_QUERIES: dict[str, str] = {
         '  mysql_slave_status_slave_sql_running{{{sel}}}'
         ')'
     ),
-    # Buffer pool pressure: avg(buffer_pool) / avg(mem_available) * 100
-    # Metrics come from different exporters with different instance ports so
-    # we aggregate each separately by lp_cluster before dividing.
+    # Buffer pool pressure per instance: buffer_pool_size / mem_available * 100.
+    # mysqld_exporter runs on :14402, node_exporter on :14401 — instance labels differ by port.
+    # label_replace strips the port to get a bare hostname, enabling per-host vector matching.
+    # Returns one series per instance (lp_instance label preserved) so the analyzer can
+    # write one verdict per node.
     "mysql.buffer.pool.pressure.pct": (
-        'avg by (lp_cluster) (mysql_global_variables_innodb_buffer_pool_size{{{sel}}}) / '
-        'avg by (lp_cluster) (node_memory_MemAvailable_bytes{{{sel}}}) * 100'
+        'label_replace(mysql_global_variables_innodb_buffer_pool_size{{{sel}}}, "host", "$1", "instance", "(.+):\\\\d+") '
+        '/ on(host) group_left(lp_instance) '
+        'label_replace(node_memory_MemAvailable_bytes{{{sel}}}, "host", "$1", "instance", "(.+):\\\\d+") '
+        '* 100'
+    ),
+    # Raw buffer pool size per instance (for evidence text)
+    "mysql.buffer.pool.bytes": (
+        'mysql_global_variables_innodb_buffer_pool_size{{{sel}}}'
+    ),
+    # Available RAM per instance (for evidence text)
+    "mysql.memory.available.bytes": (
+        'node_memory_MemAvailable_bytes{{{sel}}}'
     ),
     # CPU for MySQL nodes (same formula as ES)
     "mysql.os.cpu.percent": (
@@ -451,6 +463,54 @@ class GrafanaCloudAdapter(BaseMetricsAdapter):
                 result[derived] = (num_val / den_val) * multiplier
 
         return result
+
+    async def get_latest_metrics_per_instance(
+        self,
+        cluster_id: str,
+        canonical_names: list[str],
+        instance_label: str = "lp_instance",
+    ) -> dict[str, dict[str, float]]:
+        """
+        Fetch the most recent value for each canonical metric, broken out per instance.
+        Returns {instance_id: {canonical_name: value}}.
+
+        Only works for custom queries that return per-instance series (i.e. do NOT
+        aggregate with 'by (lp_cluster)'). Falls back to get_latest_metrics (cluster avg)
+        for metrics without per-instance custom queries.
+        """
+        base_selector_inner = cluster_selector(cluster_id)[1:-1]
+        per_instance: dict[str, dict[str, float]] = {}
+
+        async def fetch_one(canonical: str) -> tuple[str, list[tuple[str, float]]]:
+            custom_tmpl = self._custom_queries.get(canonical)
+            if not custom_tmpl:
+                return canonical, []
+            query = custom_tmpl.format(sel=base_selector_inner)
+            try:
+                data = await self._get("/api/v1/query", {"query": query})
+                results = data.get("data", {}).get("result", [])
+                pairs = []
+                for r in results:
+                    if not r.get("value"):
+                        continue
+                    # Try lp_instance label first, fall back to stripping port from instance
+                    iid = r["metric"].get(instance_label)
+                    if not iid:
+                        raw_inst = r["metric"].get("instance", "")
+                        iid = raw_inst.rsplit(":", 1)[0] if ":" in raw_inst else raw_inst
+                    if iid:
+                        pairs.append((iid, float(r["value"][1])))
+                return canonical, pairs
+            except Exception as e:
+                logger.warning(f"Failed per-instance fetch for {canonical}: {e}")
+                return canonical, []
+
+        tasks = [fetch_one(name) for name in canonical_names]
+        for canonical, pairs in await asyncio.gather(*tasks):
+            for iid, value in pairs:
+                per_instance.setdefault(iid, {})[canonical] = value
+
+        return per_instance
 
     async def _fetch_latest_direct(
         self,

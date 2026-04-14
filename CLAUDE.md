@@ -153,30 +153,62 @@ Customer sees only: database names and health status
 
 ---
 
+## Per-instance verdict pattern (MySQL analyzers)
+
+Some failure modes are inherently per-instance, not per-cluster. MySQL InnoDB buffer
+pool pressure is one: each node has its own buffer pool size and its own available RAM.
+Collapsing these to a cluster average produces meaningless numbers.
+
+For these analyzers, `analyze()` returns a list[VerdictResult] instead of a single
+VerdictResult. Each item has `instance_id` set. The runner iterates the list and writes
+one verdict row per instance.
+
+Rules:
+- `instance_id` is optional on VerdictResult (None = cluster-level verdict, unchanged)
+- ES analyzers always return a single VerdictResult with instance_id=None
+- MySQL analyzers that are instance-sensitive return list[VerdictResult]
+- `_get_prev_status` filters by instance_id when it is set
+- The dashboard subquery groups by (cluster_id, analyzer_name, instance_id)
+- The Issue shape exposes `instanceId` so the frontend can label "node-1 vs node-2"
+
+The `base.py` change (adding `instance_id: str | None = None` to VerdictResult) is
+backward-compatible — existing analyzers that don't set it get None by default.
+
+---
+
 ## What is built and working
 
 ### Backend
-backend/app/models/models.py                                         schema + migrations complete
+backend/app/models/models.py                                         schema + migrations complete; verdicts has instance_id
 backend/app/schemas/schemas.py                                        complete
 backend/app/baseline/engine.py                                        complete
-backend/app/adapters/grafana_cloud/adapter.py                         live, all 9 metrics, CUSTOM_QUERIES for CPU
+backend/app/adapters/grafana_cloud/adapter.py                         live, ES + MySQL metrics, per-instance buffer pool PromQL
+backend/app/analyzers/base.py                                         VerdictResult has instance_id (explicit instruction applied)
 backend/app/analyzers/elasticsearch/jvm_heap_pressure.py             21/21 tests, live
 backend/app/analyzers/elasticsearch/shard_allocation.py              live
 backend/app/analyzers/elasticsearch/thread_pool_saturation.py        live
-backend/app/baseline/seeder.py                                        live, --all-alpha flag
-backend/app/runner/analyzer_runner.py                                 live, --all-alpha flag, LLM on status change
+backend/app/analyzers/mysql/connection_pool_saturation.py            live
+backend/app/analyzers/mysql/replication_lag.py                       live
+backend/app/analyzers/mysql/innodb_buffer_pool_pressure.py           live, per-instance verdicts
+backend/app/baseline/seeder.py                                        live, --all-alpha-es/mysql/both flags
+backend/app/runner/analyzer_runner.py                                 live, instance-aware verdict writing + LLM on status change
 backend/app/runner/llm_explainer.py                                   live, Claude Haiku via Anthropic API
-backend/app/api/routes/dashboard.py                                   /dashboard/summary — live metrics, UUID IDs
+backend/app/api/routes/dashboard.py                                   /dashboard/summary — live metrics, UUID IDs, instanceId in issues
 backend/app/api/routes/ai.py                                          /ai/chat — Anthropic proxy endpoint
-backend/scripts/seed_normalisation.py                                 seeds tenant, stack, normalisation_map
+backend/scripts/seed_normalisation.py                                 seeds tenant, stack, normalisation_map (ES)
+backend/scripts/seed_mysql_normalisation.py                           seeds MySQL stack, 4 clusters, 18 norm entries
 backend/scripts/seed_alpha_clusters.py                                seeds all 5 Alpha ES clusters
 
-### All 5 Alpha clusters live
+### Clusters live
 els_shrdegt_alpha_va — good
 els_shrdone_alpha_va — good
 els_shrdsix_alpha_va — good
 els_shrdsvn_alpha_va — warning (JVM heap pressure)
 els_sixna_alpha_va   — warning (JVM heap pressure)
+mysql_aa_alpha       — per-instance verdicts (InnoDB buffer pool pressure)
+mysql_bigaa_alpha    — per-instance verdicts
+mysql_mng_alpha      — per-instance verdicts
+mysql_sharedaa_alpha — per-instance verdicts
 
 ### Frontend
 src/pages/OverviewPage.tsx          live data, skeleton loading, clickable stat strip navigation
@@ -195,18 +227,18 @@ Always check _specs/STATUS.md before starting any work.
 
 1. Internal admin views (unmapped metrics table)
 2. End-to-end integration test
-9. Internal admin views (unmapped metrics)
 
 ---
 
 ## Do not touch these files
 
 backend/app/analyzers/elasticsearch/jvm_heap_pressure.py
-backend/app/analyzers/base.py
 backend/app/baseline/engine.py
 backend/app/schemas/schemas.py
 
 These are tested and correct. Changes require explicit instruction.
+
+backend/app/analyzers/base.py — requires explicit instruction (instance_id field already added)
 
 ---
 
@@ -220,10 +252,9 @@ _specs/template.md       Spec template for /feature-spec command
 
 ## Current prototype scope
 
-Engine: Elasticsearch only
-Source systems: Grafana Cloud + Datadog
-Customer profile: Mid-size, 50+ databases, GCP + self-hosted
+Engine: Elasticsearch + MySQL (Phase 2 complete)
+Source systems: Grafana Cloud
+Customer profile: Mid-size, 50+ databases, GCP
+Environment: Staging (Alpha clusters)
 Input layers: Metrics only (logs and metadata are future phases)
 Auth: Deferred — must be compatible with Auth0 + SAML when added
-
-MySQL is Phase 2. Do not build MySQL components in this phase.

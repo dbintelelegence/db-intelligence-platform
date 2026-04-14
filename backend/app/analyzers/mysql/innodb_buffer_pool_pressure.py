@@ -1,33 +1,28 @@
 """
-Analyzer: MySQL InnoDB Buffer Pool Pressure
+Analyzer: MySQL InnoDB Buffer Pool Pressure (per-instance)
 
-Failure mode: InnoDB buffer pool consuming too much of available RAM,
-causing memory pressure, OS swapping, and disk I/O spikes as pages are
-evicted to disk.
+Failure mode: InnoDB buffer pool consuming too much of a host's available RAM,
+causing memory pressure, OS swapping, and disk I/O spikes as pages evict to disk.
+
+Each MySQL instance has its own buffer pool configured independently, and each host
+has different amounts of available RAM. This analyzer writes one verdict per instance
+so the dashboard can pinpoint exactly which node is under pressure.
 
 What it watches:
-  Metrics (required):
-    - mysql.buffer.pool.pressure.pct   — buffer_pool / mem_available * 100 (CUSTOM_QUERY)
+  Metrics (required, per-instance via get_latest_metrics_per_instance):
+    - mysql.buffer.pool.pressure.pct   — buffer_pool / mem_available * 100 (per host)
     - mysql.buffer.pool.bytes          — raw buffer pool size for evidence text
 
-  Corroborating:
+  Corroborating (per-instance):
     - mysql.memory.available.bytes     — absolute available RAM
     - mysql.tmp.disk.tables            — temp disk tables = memory spillover confirmed
-    - mysql.select.full.join           — large scans competing for buffer pool pages
 
-Verdict logic:
-  Status determined by buffer_pool_pressure_pct deviation from baseline.
-
-  Critical:  sigma > critical_sigma_threshold OR pct > 90%
-             (buffer pool consuming > 90% of available RAM → swapping imminent)
-  Degraded:  sigma > degraded_sigma_threshold OR pct > p95 baseline OR pct > 70%
+Verdict logic (per instance):
+  Critical:  pressure_pct > 90% OR sigma > critical_sigma_threshold
+  Degraded:  pressure_pct > 70% OR sigma > degraded_sigma_threshold OR pct > p95
   Healthy:   within baseline bounds
 
-Confidence:
-  MEDIUM if pressure pct alone is anomalous
-  +1 if tmp.disk.tables elevated (memory spillover confirmed)
-  +1 if available.bytes is critically low (< 10% of total RAM)
-  Maximum: HIGH   Minimum: LOW
+Returns list[VerdictResult] — one entry per discovered MySQL instance.
 """
 
 from datetime import datetime
@@ -37,25 +32,33 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Buffer pool pressure thresholds (used only when no baseline available)
 DEGRADED_PCT_THRESHOLD = 70.0
 CRITICAL_PCT_THRESHOLD = 90.0
+
+# Metrics fetched per-instance via get_latest_metrics_per_instance
+PER_INSTANCE_METRICS = [
+    "mysql.buffer.pool.pressure.pct",
+    "mysql.buffer.pool.bytes",
+    "mysql.memory.available.bytes",
+]
+
+CORROBORATING_METRICS = [
+    "mysql.tmp.disk.tables",
+]
 
 
 class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
 
     ANALYZER_NAME = "mysql_innodb_buffer_pool_pressure"
 
+    # These are still declared so can_run() works against the cluster-level metrics dict.
+    # The actual per-instance fetch happens in analyze() via the adapter reference.
     REQUIRED_METRICS = [
         "mysql.buffer.pool.pressure.pct",
         "mysql.buffer.pool.bytes",
     ]
 
-    CORROBORATING_METRICS = [
-        "mysql.memory.available.bytes",
-        "mysql.tmp.disk.tables",
-        "mysql.select.full.join",
-    ]
+    CORROBORATING_METRICS = CORROBORATING_METRICS
 
     OPTIONAL_LOG_SIGNALS = []
 
@@ -65,20 +68,62 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
         baselines: dict,
         log_signals: dict[str, int],
         metric_ts: datetime,
-    ) -> VerdictResult:
+        per_instance_metrics: dict[str, dict[str, float]] | None = None,
+    ) -> list[VerdictResult]:
+        """
+        Returns one VerdictResult per MySQL instance.
 
-        pressure_pct = metrics["mysql.buffer.pool.pressure.pct"]
-        buffer_pool_bytes = metrics["mysql.buffer.pool.bytes"]
-        mem_available = metrics.get("mysql.memory.available.bytes")
-        tmp_disk_tables = metrics.get("mysql.tmp.disk.tables")
-        full_joins = metrics.get("mysql.select.full.join")
+        per_instance_metrics: {instance_id: {canonical_name: value}}
+        Populated by the runner before calling analyze() for per-instance analyzers.
+        Falls back to a single cluster-level verdict if not provided.
+        """
+        if not per_instance_metrics:
+            # Fallback: single cluster-level verdict from aggregated metrics
+            return [self._analyze_instance(
+                instance_id=None,
+                pressure_pct=metrics.get("mysql.buffer.pool.pressure.pct", 0.0),
+                buffer_pool_bytes=metrics.get("mysql.buffer.pool.bytes", 0.0),
+                mem_available=metrics.get("mysql.memory.available.bytes"),
+                tmp_disk_tables=metrics.get("mysql.tmp.disk.tables"),
+                baselines=baselines,
+                metric_ts=metric_ts,
+            )]
+
+        results = []
+        for instance_id, inst_metrics in per_instance_metrics.items():
+            pressure_pct = inst_metrics.get("mysql.buffer.pool.pressure.pct")
+            if pressure_pct is None:
+                continue  # no data for this instance — skip
+            results.append(self._analyze_instance(
+                instance_id=instance_id,
+                pressure_pct=pressure_pct,
+                buffer_pool_bytes=inst_metrics.get("mysql.buffer.pool.bytes", 0.0),
+                mem_available=inst_metrics.get("mysql.memory.available.bytes"),
+                tmp_disk_tables=inst_metrics.get("mysql.tmp.disk.tables"),
+                baselines=baselines,
+                metric_ts=metric_ts,
+            ))
+        return results
+
+    def _analyze_instance(
+        self,
+        instance_id: str | None,
+        pressure_pct: float,
+        buffer_pool_bytes: float,
+        mem_available: float | None,
+        tmp_disk_tables: float | None,
+        baselines: dict,
+        metric_ts: datetime,
+    ) -> VerdictResult:
 
         baseline = baselines.get("mysql.buffer.pool.pressure.pct")
         tmp_baseline = baselines.get("mysql.tmp.disk.tables")
         evidence: list[EvidenceItem] = []
 
-        buffer_pool_gb = buffer_pool_bytes / (1024 ** 3)
+        buffer_pool_gb = buffer_pool_bytes / (1024 ** 3) if buffer_pool_bytes else 0.0
         mem_available_gb = (mem_available / (1024 ** 3)) if mem_available else None
+
+        instance_label = f" on {instance_id}" if instance_id else ""
 
         # ── Baseline sigma scoring ─────────────────────────────────────────────
         sigma = 0.0
@@ -90,7 +135,7 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
             observed_str = (
                 f"Buffer pool {buffer_pool_gb:.1f}GB consuming {pressure_pct:.1f}% of available RAM"
                 + (f" ({mem_available_gb:.1f}GB free)" if mem_available_gb else "")
-                + f", baseline p50={baseline.p50:.1f}%, p95={baseline.p95:.1f}%"
+                + f"{instance_label}, baseline p50={baseline.p50:.1f}%, p95={baseline.p95:.1f}%"
             )
             baseline_summary = (
                 f"Normal pressure: {baseline.p50:.1f}% ± {baseline.std_dev:.1f}% "
@@ -100,12 +145,12 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
             observed_str = (
                 f"Buffer pool {buffer_pool_gb:.1f}GB consuming {pressure_pct:.1f}% of available RAM"
                 + (f" ({mem_available_gb:.1f}GB free)" if mem_available_gb else "")
-                + " — no baseline yet"
+                + f"{instance_label} — no baseline yet"
             )
             baseline_summary = "Insufficient history for baseline (< 100 samples)"
 
         evidence.append(EvidenceItem(
-            text=f"mysql.buffer.pool.pressure.pct={pressure_pct:.1f}% sigma={sigma:.2f} (pool={buffer_pool_gb:.1f}GB)",
+            text=f"mysql.buffer.pool.pressure.pct={pressure_pct:.1f}% sigma={sigma:.2f} (pool={buffer_pool_gb:.1f}GB){instance_label}",
             source_type="metric",
             confidence_delta=0,
         ))
@@ -116,23 +161,23 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
                 status = HealthStatus.critical
                 root_cause = (
                     f"InnoDB buffer pool ({buffer_pool_gb:.1f}GB) consuming {pressure_pct:.1f}% of "
-                    f"available RAM. OS memory pressure likely — swapping may occur."
+                    f"available RAM{instance_label}. OS memory pressure likely — swapping may occur."
                 )
             elif pressure_pct >= DEGRADED_PCT_THRESHOLD:
                 status = HealthStatus.degraded
                 root_cause = (
                     f"InnoDB buffer pool ({buffer_pool_gb:.1f}GB) consuming {pressure_pct:.1f}% of "
-                    f"available RAM. Risk of memory pressure under increased load."
+                    f"available RAM{instance_label}. Risk of memory pressure under increased load."
                 )
             else:
                 status = HealthStatus.healthy
-                root_cause = f"InnoDB buffer pool pressure within acceptable range at {pressure_pct:.1f}%."
+                root_cause = f"InnoDB buffer pool pressure within acceptable range at {pressure_pct:.1f}%{instance_label}."
             confidence = ConfidenceLevel.low
         elif sigma > settings.critical_sigma_threshold or pressure_pct >= CRITICAL_PCT_THRESHOLD:
             status = HealthStatus.critical
             root_cause = (
                 f"InnoDB buffer pool ({buffer_pool_gb:.1f}GB) at critical pressure: "
-                f"{pressure_pct:.1f}% of available RAM ({sigma:.1f}σ above baseline). "
+                f"{pressure_pct:.1f}% of available RAM ({sigma:.1f}σ above baseline){instance_label}. "
                 f"OS will begin paging — expect severe I/O latency and query timeouts."
             )
             confidence = ConfidenceLevel.medium
@@ -140,7 +185,7 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
             status = HealthStatus.degraded
             root_cause = (
                 f"InnoDB buffer pool pressure elevated at {pressure_pct:.1f}% of available RAM "
-                f"({sigma:.1f}σ above baseline p50={baseline.p50:.1f}%). "
+                f"({sigma:.1f}σ above baseline p50={baseline.p50:.1f}%){instance_label}. "
                 f"Buffer pool ({buffer_pool_gb:.1f}GB) competing with OS and other processes for RAM."
             )
             confidence = ConfidenceLevel.medium
@@ -148,7 +193,7 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
             status = HealthStatus.healthy
             root_cause = (
                 f"InnoDB buffer pool pressure within baseline at {pressure_pct:.1f}% "
-                f"({sigma:.1f}σ from p50)."
+                f"({sigma:.1f}σ from p50){instance_label}."
             )
             confidence = ConfidenceLevel.medium
 
@@ -166,12 +211,11 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
                 if confidence == ConfidenceLevel.medium:
                     confidence = ConfidenceLevel.high
 
-        # ── Corroborating: available RAM critically low ────────────────────────
-        if mem_available is not None and status != HealthStatus.healthy:
-            # < 1GB free is always concerning regardless of baseline
-            if mem_available < 1 * (1024 ** 3):
+        # ── Corroborating: available RAM ──────────────────────────────────────
+        if mem_available is not None:
+            if mem_available < 1 * (1024 ** 3) and status != HealthStatus.healthy:
                 evidence.append(EvidenceItem(
-                    text=f"mysql.memory.available.bytes={mem_available_gb:.2f}GB — critically low free RAM",
+                    text=f"mysql.memory.available.bytes={mem_available_gb:.2f}GB — critically low free RAM{instance_label}",
                     source_type="metric",
                     confidence_delta=1,
                 ))
@@ -179,18 +223,10 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
                     confidence = ConfidenceLevel.high
             else:
                 evidence.append(EvidenceItem(
-                    text=f"mysql.memory.available.bytes={mem_available_gb:.1f}GB free",
+                    text=f"mysql.memory.available.bytes={mem_available_gb:.1f}GB free{instance_label}",
                     source_type="metric",
                     confidence_delta=0,
                 ))
-
-        # ── Corroborating: full joins ─────────────────────────────────────────
-        if full_joins is not None and full_joins > 0 and status != HealthStatus.healthy:
-            evidence.append(EvidenceItem(
-                text=f"mysql.select.full.join={full_joins:.0f} — large table scans may be thrashing buffer pool",
-                source_type="metric",
-                confidence_delta=0,
-            ))
 
         recommendation = (
             "Check current buffer pool usage: "
@@ -212,4 +248,5 @@ class InnodbBufferPoolPressureAnalyzer(BaseAnalyzer):
             confidence=confidence,
             evidence=evidence,
             metric_ts=metric_ts,
+            instance_id=instance_id,
         )

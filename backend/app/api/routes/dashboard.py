@@ -148,7 +148,7 @@ def _cluster_to_database(
         "type": db_type,
         "cloud": cloud,
         "region": region,
-        "environment": "production",        # Alpha = internal test; treat as prod for UI
+        "environment": "staging",
         "healthScore": health_score,
         "healthStatus": health_status,
         "healthTrend": "stable",
@@ -191,10 +191,11 @@ def _verdict_to_issue(verdict: Verdict, cluster: Cluster) -> dict[str, Any]:
         "id": str(verdict.id),
         "databaseId": str(cluster.id),
         "databaseName": cluster.display_name,
+        "instanceId": verdict.instance_id,
         "severity": severity,
         "category": category,
         "status": "active",
-        "title": _analyzer_title(verdict.analyzer_name, verdict.status.value),
+        "title": _analyzer_title(verdict.analyzer_name, verdict.status.value, verdict.instance_id),
         "description": verdict.observed,
         "explanation": explanation,
         "recommendation": verdict.recommendation,
@@ -209,7 +210,7 @@ def _verdict_to_issue(verdict: Verdict, cluster: Cluster) -> dict[str, Any]:
     }
 
 
-def _analyzer_title(analyzer_name: str, status: str) -> str:
+def _analyzer_title(analyzer_name: str, status: str, instance_id: str | None = None) -> str:
     titles = {
         "jvm_heap_pressure": {
             "critical": "JVM heap exhaustion — GC unable to reclaim memory",
@@ -236,7 +237,10 @@ def _analyzer_title(analyzer_name: str, status: str) -> str:
             "degraded": "InnoDB buffer pool pressure elevated above baseline",
         },
     }
-    return titles.get(analyzer_name, {}).get(status, f"{analyzer_name} — {status}")
+    title = titles.get(analyzer_name, {}).get(status, f"{analyzer_name} — {status}")
+    if instance_id:
+        title = f"{title} ({instance_id})"
+    return title
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -278,15 +282,17 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any
 
     all_cluster_uuids = [c.id for c in clusters]
 
-    # Latest verdict per analyzer per cluster
+    # Latest verdict per (analyzer, instance) per cluster.
+    # instance_id is None for cluster-level verdicts and a host string for per-instance ones.
     latest_subq = (
         select(
             Verdict.cluster_id,
             Verdict.analyzer_name,
+            Verdict.instance_id,
             func.max(Verdict.run_at).label("max_run_at"),
         )
         .where(Verdict.cluster_id.in_(all_cluster_uuids))
-        .group_by(Verdict.cluster_id, Verdict.analyzer_name)
+        .group_by(Verdict.cluster_id, Verdict.analyzer_name, Verdict.instance_id)
         .subquery()
     )
 
@@ -297,6 +303,7 @@ async def dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict[str, Any
             and_(
                 Verdict.cluster_id == latest_subq.c.cluster_id,
                 Verdict.analyzer_name == latest_subq.c.analyzer_name,
+                Verdict.instance_id == latest_subq.c.instance_id,
                 Verdict.run_at == latest_subq.c.max_run_at,
             ),
         )

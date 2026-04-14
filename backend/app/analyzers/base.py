@@ -33,6 +33,10 @@ class VerdictResult:
     """
     Structured output of one analyzer run.
     The analyzer fills this — the LLM never touches it.
+
+    instance_id: set when the verdict is scoped to a single DB instance rather
+    than the whole cluster (e.g. MySQL per-node buffer pool pressure).
+    None means cluster-level verdict (all ES analyzers, most MySQL analyzers).
     """
     analyzer_name: str
     status: HealthStatus
@@ -43,6 +47,7 @@ class VerdictResult:
     confidence: ConfidenceLevel
     evidence: list[EvidenceItem] = field(default_factory=list)
     metric_ts: datetime | None = None  # Timestamp of most recent metric used
+    instance_id: str | None = None     # Set for per-instance verdicts; None = cluster-level
 
 
 class BaseAnalyzer:
