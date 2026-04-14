@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, Bot, User as UserIcon, Settings, CheckCircle2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import { cn } from '@/lib/utils';
 import type { ConversationMessage, LLMConfig, TimeWindow } from '@/types/summarization';
 
@@ -156,7 +157,20 @@ export function ChatInterface({
                   : 'bg-muted'
               )}
             >
-              <div className="text-sm whitespace-pre-wrap break-words">{message.content}</div>
+              {message.role === 'assistant' ? (
+                <div className="text-sm prose prose-sm dark:prose-invert max-w-none
+                  prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1
+                  prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
+                  prose-p:my-1 prose-ul:my-1 prose-ol:my-1
+                  prose-li:my-0.5 prose-code:text-xs prose-pre:text-xs
+                  prose-code:bg-muted prose-code:px-1 prose-code:rounded
+                  prose-pre:bg-muted prose-pre:p-3 prose-pre:rounded-md prose-pre:overflow-x-auto
+                  [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                  <ReactMarkdown>{message.content}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="text-sm whitespace-pre-wrap break-words">{message.content}</div>
+              )}
               {message.dataPoints && (
                 <div className="mt-3 pt-3 border-t border-border/50 flex gap-4 text-xs opacity-70">
                   <span>{message.dataPoints.metricsAnalyzed} metrics</span>

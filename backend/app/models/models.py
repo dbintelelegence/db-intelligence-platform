@@ -2,9 +2,13 @@
 SQLAlchemy ORM models for the DB Intelligence Platform.
 
 Table inventory:
+  tenants                    — tenant isolation anchor
+  stacks                     — internal: one engine + one source system + one tenant
   clusters                   — topology registry, one row per cluster
   cluster_metric_registry    — auto-populated from ingestion; what metrics a cluster sends
   cluster_log_registry       — auto-populated from ingestion; what log signal types arrive
+  normalisation_map          — raw metric name → canonical name, maintained by product team
+  unmapped_metrics           — metrics the adapter could not normalise; feedback loop
   baseline_profiles          — nightly percentile computation per cluster per metric
   analyzer_definitions       — static seed data; one row per named failure-mode analyzer
   analyzer_metric_requirements — what metrics each analyzer needs (required vs optional)
@@ -14,10 +18,12 @@ Table inventory:
   verdict_evidence           — individual evidence items backing each verdict
   log_signals                — extracted log signals (raw logs discarded at ingestion)
   llm_explanations           — plain-English explanations generated on status change only
+  onboarding_sessions        — state machine for connect → discover → seed flow
 """
 
 import uuid
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import (
     String, Integer, Float, Boolean, DateTime, Text,
     ForeignKey, UniqueConstraint, Index, Enum as SAEnum
@@ -62,6 +68,54 @@ class EvidenceSourceType(str, enum.Enum):
     metric = "metric"
     log_signal = "log_signal"
 
+class SourceType(str, enum.Enum):
+    grafana_cloud = "grafana_cloud"
+    datadog = "datadog"
+
+
+# ── tenants ───────────────────────────────────────────────────────────────────
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    stacks: Mapped[list["Stack"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
+    unmapped_metrics: Mapped[list["UnmappedMetric"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
+    onboarding_sessions: Mapped[list["OnboardingSession"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
+
+
+# ── stacks ────────────────────────────────────────────────────────────────────
+
+class Stack(Base):
+    """
+    Internal concept only — never exposed to customer.
+    One stack = one engine type + one source system + one tenant.
+    """
+    __tablename__ = "stacks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    db_type: Mapped[DbType] = mapped_column(SAEnum(DbType), nullable=False)
+    source_type: Mapped[SourceType] = mapped_column(SAEnum(SourceType), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    api_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_ref: Mapped[str] = mapped_column(Text, nullable=False)  # env var name or secret ref
+    # Which label combination identifies a unique cluster in this source system
+    cluster_label_key: Mapped[str | None] = mapped_column(String(128))
+    has_metrics_adapter: Mapped[bool] = mapped_column(Boolean, default=True)
+    has_log_adapter: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_metadata_adapter: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_successful_pull: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="stacks")
+    clusters: Mapped[list["Cluster"]] = relationship(back_populates="stack", cascade="all, delete-orphan")
+    unmapped_metrics: Mapped[list["UnmappedMetric"]] = relationship(back_populates="stack", cascade="all, delete-orphan")
+
 
 # ── clusters ─────────────────────────────────────────────────────────────────
 
@@ -69,6 +123,7 @@ class Cluster(Base):
     __tablename__ = "clusters"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stack_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("stacks.id", ondelete="SET NULL"))
     cluster_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     db_type: Mapped[DbType] = mapped_column(SAEnum(DbType), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -91,9 +146,11 @@ class Cluster(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
+    stack: Mapped["Stack | None"] = relationship(back_populates="clusters")
     metric_registry: Mapped[list["ClusterMetricRegistry"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
     log_registry: Mapped[list["ClusterLogRegistry"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
-    baselines: Mapped[list["BaselineProfile"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
+    # Note: baseline_profiles.cluster_id is a string composite key, not a UUID FK.
+    # No ORM relationship — use engine.py functions to query by cluster_id string.
     verdicts: Mapped[list["Verdict"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
     log_signals: Mapped[list["LogSignal"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
     capability_map: Mapped[list["AnalyzerCapabilityMap"]] = relationship(back_populates="cluster", cascade="all, delete-orphan")
@@ -164,7 +221,9 @@ class BaselineProfile(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False)
+    # Composite string key: lp_segment|datacenter|lp_cluster — matches cluster.cluster_id
+    # NOT a UUID FK — the engine queries by this string, not by clusters.id
+    cluster_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 
     canonical_metric_name: Mapped[str] = mapped_column(String(255), nullable=False)
 
@@ -185,8 +244,6 @@ class BaselineProfile(Base):
     # Covers data from this window when computing
     covers_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     covers_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    cluster: Mapped["Cluster"] = relationship(back_populates="baselines")
 
 
 # ── analyzer_definitions (static seed data) ───────────────────────────────────
@@ -259,8 +316,10 @@ class AnalyzerCapabilityMap(Base):
     runnable_status: Mapped[RunnableStatus] = mapped_column(SAEnum(RunnableStatus), nullable=False)
     # Maximum confidence level this cluster can achieve for this analyzer
     confidence_ceiling: Mapped[str] = mapped_column(String(16), nullable=False)  # low | medium | high
-    # JSON list of missing canonical metric names
-    missing_metrics: Mapped[str | None] = mapped_column(Text)
+    # JSON list of missing primary metric canonical names (missing = analyzer cannot run)
+    missing_primary: Mapped[str | None] = mapped_column(Text)
+    # JSON list of missing corroborating metric canonical names (missing = confidence drops)
+    missing_corroborating: Mapped[str | None] = mapped_column(Text)
     # JSON list of missing log signal types
     missing_log_signals: Mapped[str | None] = mapped_column(Text)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -390,3 +449,81 @@ class LlmExplanation(Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer)
 
     verdict: Mapped["Verdict"] = relationship(back_populates="llm_explanation")
+
+
+# ── normalisation_map ─────────────────────────────────────────────────────────
+
+class NormalisationMap(Base):
+    """
+    Maps raw source metric names to canonical names.
+    Maintained by product team via admin UI — not a static Python file.
+    Loaded into memory at startup with a 5-minute TTL.
+    """
+    __tablename__ = "normalisation_map"
+    __table_args__ = (
+        UniqueConstraint("source_type", "db_type", "raw_metric_name", name="uq_norm_source_db_raw"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_type: Mapped[SourceType] = mapped_column(SAEnum(SourceType), nullable=False)
+    db_type: Mapped[DbType] = mapped_column(SAEnum(DbType), nullable=False)
+    raw_metric_name: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── unmapped_metrics ──────────────────────────────────────────────────────────
+
+class UnmappedMetric(Base):
+    """
+    Metrics the adapter received but could not normalise.
+    Product team reviews this table to add new normalisation_map entries.
+    occurrence_count distinguishes noise from real exporter variants.
+    """
+    __tablename__ = "unmapped_metrics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    stack_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stacks.id", ondelete="CASCADE"), nullable=False)
+    source_type: Mapped[SourceType] = mapped_column(SAEnum(SourceType), nullable=False)
+    db_type: Mapped[DbType] = mapped_column(SAEnum(DbType), nullable=False)
+    raw_metric_name: Mapped[str] = mapped_column(Text, nullable=False)
+    sample_value: Mapped[float | None] = mapped_column(Float)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    # new | reviewed | mapped | rejected
+    status: Mapped[str] = mapped_column(String(32), default="new")
+    canonical_name: Mapped[str | None] = mapped_column(Text)  # filled by product team when resolved
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[str | None] = mapped_column(Text)
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="unmapped_metrics")
+    stack: Mapped["Stack"] = relationship(back_populates="unmapped_metrics")
+
+
+# ── onboarding_sessions ───────────────────────────────────────────────────────
+
+class OnboardingSession(Base):
+    """
+    State machine for the customer connect → discover → seed → ready flow.
+    States: PENDING_CONNECTION | CONNECTING | CONNECTION_FAILED |
+            DISCOVERING | DISCOVERY_COMPLETE | AWAITING_CONFIRMATION |
+            SEEDING_BASELINES | READY | PARTIALLY_READY
+    """
+    __tablename__ = "onboarding_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    stack_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("stacks.id", ondelete="SET NULL"))
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    clusters_found: Mapped[int | None] = mapped_column(Integer)
+    clusters_ready: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="onboarding_sessions")

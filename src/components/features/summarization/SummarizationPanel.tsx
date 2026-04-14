@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Sparkles, Clock, X, MessageSquare, GripVertical } from 'lucide-react';
 import type { TimeWindow, ConversationMessage, LLMConfig } from '@/types/summarization';
 import { generateAISummary } from '@/services/summarization-service';
+import { useDashboard } from '@/hooks/useDashboard';
 import { ChatInterface } from './ChatInterface';
 
 interface SummarizationPanelProps {
@@ -17,6 +18,7 @@ const TIME_WINDOWS: { value: TimeWindow; label: string }[] = [
 ];
 
 export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
+  const { clusters, issues: liveIssues } = useDashboard();
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('24h');
   const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -49,6 +51,8 @@ export function SummarizationPanel({ onClose }: SummarizationPanelProps) {
       const result = await generateAISummary({
         prompt: messageText,
         timeWindow,
+        databases: clusters,
+        issues: liveIssues,
         conversationHistory: messages,
         includeMetrics: true,
         includeLogs: true,

@@ -211,7 +211,10 @@ export function ClusterAIPanel({ database, issues }: ClusterAIPanelProps) {
     setLoading(true);
 
     try {
-      const llmConfig: LLMConfig = { provider: 'mock' };
+      const anthropicKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+      const llmConfig: LLMConfig = anthropicKey
+        ? { provider: 'anthropic', apiKey: anthropicKey, model: 'claude-haiku-4-5-20251001', temperature: 0.3 }
+        : { provider: 'mock' };
 
       // Override the system prompt by prepending cluster context to the user message
       // The existing service doesn't support custom system prompts per-call,
@@ -223,10 +226,12 @@ export function ClusterAIPanel({ database, issues }: ClusterAIPanelProps) {
         prompt: enrichedPrompt,
         timeWindow: '24h',
         databaseIds: [database.id],
+        databases: [database],
+        issues,
         conversationHistory: messages,
         includeMetrics: true,
         includeIssues: true,
-        useLLM: false, // uses mock — swap to true + pass API key for real LLM
+        useLLM: llmConfig.provider !== 'mock',
         llmConfig,
       });
 

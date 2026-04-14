@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import ingest, clusters, verdicts, baselines
+from app.api.routes import ingest, clusters, verdicts, baselines, dashboard, ai
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -22,7 +22,9 @@ app.add_middleware(
 app.include_router(ingest.router,   prefix="/ingest",   tags=["ingestion"])
 app.include_router(clusters.router, prefix="/clusters", tags=["clusters"])
 app.include_router(verdicts.router, prefix="/verdicts", tags=["verdicts"])
-app.include_router(baselines.router,prefix="/baselines",tags=["baselines"])
+app.include_router(baselines.router, prefix="/baselines",  tags=["baselines"])
+app.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+app.include_router(ai.router,        prefix="/ai",        tags=["ai"])
 
 
 @app.get("/health")

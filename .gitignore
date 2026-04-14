@@ -33,3 +33,10 @@ dist-ssr
 # Vercel
 .vercel
 .claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+backend/.venv/
+backend/.env

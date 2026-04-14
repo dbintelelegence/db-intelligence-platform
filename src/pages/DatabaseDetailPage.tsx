@@ -1,9 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTimeRange } from '@/hooks/useTimeRange';
-import { getDatabaseById, getIssuesByDatabaseId } from '@/data/mock-data';
-import { useScoringConfig } from '@/hooks/useScoringConfig';
-import { recalculateDatabaseHealth } from '@/lib/health-scoring';
+import { useDashboard } from '@/hooks/useDashboard';
 import { generateMetricsTimeSeries } from '@/data/generators/metrics-time-series-generator';
 import { formatCurrency } from '@/lib/formatters';
 import { ClusterAIPanel } from '@/components/features/database-detail/ClusterAIPanel';
@@ -247,22 +245,22 @@ export function DatabaseDetailPage() {
   const navigate = useNavigate();
   const [showAllMetrics, setShowAllMetrics] = useState(false);
   const { timeRange } = useTimeRange('24h');
-  const { getConfigForEnv } = useScoringConfig();
+  const { clusters, issues: allIssues } = useDashboard();
 
   const database = useMemo(() => {
     if (!id) return null;
-    const db = getDatabaseById(id);
-    if (!db) return null;
-    return recalculateDatabaseHealth(db, getConfigForEnv(db.environment));
-  }, [id, getConfigForEnv]);
+    return clusters.find(c => c.id === id) ?? null;
+  }, [id, clusters]);
 
   const issues = useMemo(() => {
     if (!id) return [];
-    return getIssuesByDatabaseId(id).sort((a, b) => {
-      const order = { critical: 0, warning: 1, info: 2 };
-      return order[a.severity] - order[b.severity];
-    });
-  }, [id]);
+    return allIssues
+      .filter(i => i.databaseId === id)
+      .sort((a, b) => {
+        const order = { critical: 0, warning: 1, info: 2 };
+        return order[a.severity] - order[b.severity];
+      });
+  }, [id, allIssues]);
 
   const activeIssues = issues.filter(i => i.status === 'active');
 

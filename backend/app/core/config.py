@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     # How many days of history to use when computing baselines
     baseline_lookback_days: int = 30
 
+    # Grafana Cloud — GCP Prod stack
+    grafana_gcp_prod_url: str = ""
+    grafana_gcp_prod_instance_id: str = ""
+    grafana_gcp_prod_api_key: str = ""
+
+    # Adapter runner
+    analyzer_run_interval_seconds: int = 300
+    normalisation_cache_ttl_seconds: int = 300
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

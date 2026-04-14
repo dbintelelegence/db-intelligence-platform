@@ -23,8 +23,16 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/db_intelligence
-      DEBUG: "true"
+
+      # Grafana Cloud — GCP Prod stack (set in .env or shell env)
+      GRAFANA_GCP_PROD_URL: ${GRAFANA_GCP_PROD_URL:-}
+      GRAFANA_GCP_PROD_INSTANCE_ID: ${GRAFANA_GCP_PROD_INSTANCE_ID:-}
+      GRAFANA_GCP_PROD_API_KEY: ${GRAFANA_GCP_PROD_API_KEY:-}
+
+      # LLM — used by verdict writer and AI chat proxy
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+      DEBUG: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,6 +41,7 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              python scripts/seed_analyzers.py &&
+             python scripts/seed_normalisation.py &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   frontend:

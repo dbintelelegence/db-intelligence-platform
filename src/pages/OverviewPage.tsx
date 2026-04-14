@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { mockData } from '@/data/mock-data';
-import { useScoredDatabases } from '@/hooks/useScoredDatabases';
+import { useDashboard } from '@/hooks/useDashboard';
 import { formatCurrency } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
@@ -60,7 +59,7 @@ function StatStrip({ total, healthy, warning, critical, cost }: {
 
 // ── Issue row (ranked list left panel) ───────────────────────────────────────
 
-function IssueRow({ issue, onClick }: { issue: typeof mockData.issues[0]; onClick: () => void }) {
+function IssueRow({ issue, onClick }: { issue: import('@/types').Issue; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -116,7 +115,10 @@ function ClusterRow({ db }: { db: Database }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function OverviewPage() {
-  const databases = useScoredDatabases(mockData.databases);
+  const { clusters: rawClusters, issues: allIssues, loading, error, lastFetched, refresh } = useDashboard();
+  // Backend is the scoring authority — use its healthScore/healthStatus directly.
+  // useScoredDatabases is for mock data only.
+  const databases = rawClusters;
   const [search, setSearch] = useState('');
   const [showHealthy, setShowHealthy] = useState(false);
   const navigate = useNavigate();
@@ -125,10 +127,10 @@ export function OverviewPage() {
     const critical  = databases.filter(db => db.healthStatus === 'critical');
     const degraded  = databases.filter(db => db.healthStatus === 'warning');
     const healthy   = databases.filter(db => db.healthStatus === 'excellent' || db.healthStatus === 'good');
-    const activeIssues = mockData.issues.filter(i => i.status === 'active');
+    const activeIssues = allIssues.filter(i => i.status === 'active');
     const totalCost = databases.reduce((s, db) => s + db.monthlyCost, 0);
     return { critical, degraded, healthy, activeIssues, totalCost };
-  }, [databases]);
+  }, [databases, allIssues]);
 
   const needsAttention = [...critical, ...degraded];
 
@@ -162,7 +164,7 @@ export function OverviewPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {databases.length} clusters · updated just now
+            {databases.length} clusters · {loading ? 'updating…' : error ? 'using cached data' : lastFetched ? `updated ${lastFetched.toLocaleTimeString()}` : 'loading…'}
           </p>
         </div>
       </div>

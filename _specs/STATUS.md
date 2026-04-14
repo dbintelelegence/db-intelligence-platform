@@ -10,8 +10,8 @@
 
 **Phase:** Grafana Cloud Pull Adapter + End-to-End Verdict Pipeline
 **Plan document:** `_specs/plan-master.md`
-**Last updated:** April 13 2026 — manual discovery session complete
-**Last session ended:** Manual discovery done, ready for Step 2
+**Last updated:** April 14 2026 — Step 9 fully complete, all live metrics populating
+**Last session ended:** Step 9 complete with live CPU/storage/latency/throughput metrics
 
 ---
 
@@ -20,14 +20,14 @@
 | Step | Description | Status | Notes |
 |------|-------------|--------|-------|
 | 1 | Discovery — Grafana Cloud queries | Complete | Done manually, findings below |
-| 2 | Database schema and migrations | Not started | |
-| 3 | Adapter interface and configuration | Not started | |
-| 4 | Baseline seeder | Not started | |
-| 5 | Analyzer runner | Not started | |
-| 6 | Verdict writer | Not started | |
-| 7 | Shard allocation failure analyzer | Not started | |
-| 8 | Thread pool saturation analyzer | Not started | |
-| 9 | Frontend API client | Not started | |
+| 2 | Database schema and migrations | Complete | All tables created, normalisation map seeded, 21/21 tests pass |
+| 3 | Adapter interface and configuration | Complete | GrafanaCloudAdapter live-tested, all 9 Phase 1 metrics returning real values |
+| 4 | Baseline seeder | Complete | backend/app/baseline/seeder.py — 2d/5min/sequential |
+| 5 | Analyzer runner | Complete | backend/app/runner/analyzer_runner.py — live verdict written, status change detection works |
+| 6 | Verdict writer | Complete | backend/app/runner/llm_explainer.py — LLM called on status change, stored in llm_explanations |
+| 7 | Shard allocation failure analyzer | Complete | backend/app/analyzers/elasticsearch/shard_allocation.py — live, green/0 unassigned |
+| 8 | Thread pool saturation analyzer | Complete | backend/app/analyzers/elasticsearch/thread_pool_saturation.py — live, 0 rejections/queue |
+| 9 | Frontend API client | Complete | /dashboard/summary endpoint + useDashboard hook — all metrics live: memory 46%, storage 30%, latency 3.7ms, throughput 83qps |
 | 10 | Internal admin views | Not started | |
 | 11 | End-to-end integration test | Not started | |
 
@@ -35,17 +35,19 @@
 
 ## Next action
 
-Step 2 — Schema. Read backend/app/models/models.py and compare
-to plan-master.md Section 11. Show a diff of what needs to change
-and what new tables need to be added. Do not write any files until
-the diff is reviewed and approved.
-
-Before writing the adapter (Step 3), resolve the two blockers listed
-at the bottom of this file.
+Step 10 — Internal admin views (unmapped metrics). Build a simple admin page
+or API endpoint that shows what metrics arrived but couldn't be mapped
+(unmapped_metrics table), so the product team can update the normalisation map.
 
 ---
 
 ## Step 1 — Discovery COMPLETE
+
+**Output file:** `backend/app/adapters/grafana_cloud/DISCOVERY_NOTES.md` ✓ exists
+**Completion criteria met:** DISCOVERY_NOTES.md exists with real data, all confirmed metrics
+documented, cluster label hierarchy documented, blockers recorded.
+
+---
 
 ### Grafana Cloud connection
 - URL: https://prometheus-us-central1.grafana.net/api/prom
@@ -150,6 +152,15 @@ type="write" and type="search". UNVERIFIED — see blockers.
 
 ---
 
+## Known gaps — deferred decisions
+
+| Gap | Decision | When to revisit |
+|-----|----------|-----------------|
+| Historical metric storage | Not stored locally. Historical queries re-fetch from Grafana Cloud on demand via adapter `get_metrics()`. Grafana Cloud retains 13 months. Gap: if Grafana is unavailable or customer churns, history is lost. | When UI needs historical charts or when Grafana availability becomes a concern |
+| Thread pool canonical name | `thread_pool.write.*` is the canonical name but this cluster uses `type="bulk"` (pre-ES6). Adapter encodes the filter; analyzers use canonical names only. | When adding ES6+ clusters — may need a second normalisation entry pointing `type="write"` to the same canonical |
+
+---
+
 ## Discoveries and deviations from plan
 
 1. Cluster identity is a composite key (lp_segment + datacenter +
@@ -174,10 +185,19 @@ type="write" and type="search". UNVERIFIED — see blockers.
 
 ## Blockers
 
-| Blocker | Step | What is needed |
-|---------|------|----------------|
-| GC collector label values unverified | Step 3 | curl match[]={lp_cluster="els_shrdone_alpha_va",__name__="elasticsearch_jvm_gc_collection_seconds_count"} — confirm collector label values |
-| Thread pool type label values unverified | Step 3 | curl match[]={lp_cluster="els_shrdone_alpha_va",__name__="elasticsearch_thread_pool_rejected_count"} — confirm type label values |
+| Blocker | Step | Resolution |
+|---------|------|------------|
+| GC collector label | Step 3 | RESOLVED — label is `gc` (not `collector`), value is `"old"` for old-gen |
+| Thread pool type label | Step 3 | RESOLVED — no `write` type; cluster is pre-ES6; write workload = `type="bulk"` |
+
+---
+
+## Step 2 — Schema COMPLETE
+
+**Migration:** 16320476fb3d_add_tenants_stacks_normalisation_unmapped_onboarding
+**Tables created:** tenants, stacks, normalisation_map, unmapped_metrics, onboarding_sessions + all prior tables
+**Seed:** 1 tenant (prototype), 1 stack (GCP Prod DB — Elasticsearch), 1 cluster (els_shrdone_alpha_va / Alpha), 21 normalisation_map entries
+**Also:** config.py updated with Grafana Cloud env var fields; venv rebuilt with Python 3.11
 
 ---
 
