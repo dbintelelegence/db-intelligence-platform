@@ -1,4 +1,5 @@
-import { X, AlertTriangle, AlertCircle, Info, Database, Clock, Activity, FileText, GitCommit } from 'lucide-react';
+import { useEffect } from 'react';
+import { X, AlertTriangle, AlertCircle, Info, Database, Server, Clock, Activity, FileText, GitCommit } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatTimeAgo } from '@/lib/formatters';
 import type { Issue } from '@/types';
@@ -49,11 +50,22 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
 
   const colors = getSeverityColors();
 
+  // Close on ESC
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handleEsc);
+    return () => document.removeEventListener('keydown', handleEsc);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-background rounded-lg shadow-xl max-w-4xl w-full my-8">
+    <>
+      {/* Backdrop — page list stays visible behind the drawer */}
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+
+      {/* Right-side drawer */}
+      <div className="fixed right-0 top-16 bottom-0 z-50 w-[520px] bg-background border-l shadow-2xl flex flex-col">
         {/* Header */}
-        <div className={cn('flex items-start justify-between gap-4 p-6 border-b-2', colors.border)}>
+        <div className={cn('flex items-start justify-between gap-4 px-6 py-5 border-b-2 flex-shrink-0', colors.border)}>
           <div className="flex items-start gap-4 flex-1">
             <div className={cn('flex-shrink-0 mt-1', colors.icon)}>
               {getSeverityIcon()}
@@ -71,6 +83,12 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
                   <Database className="h-4 w-4" />
                   <span>{issue.databaseName}</span>
                 </div>
+                {issue.instanceId && (
+                  <div className="flex items-center gap-1 text-muted-foreground">
+                    <Server className="h-4 w-4" />
+                    <span className="font-mono text-sm">{issue.instanceId}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Clock className="h-4 w-4" />
                   <span>{formatTimeAgo(issue.detectedAt)}</span>
@@ -86,8 +104,8 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+        {/* Content — fills remaining drawer height */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Description */}
           <div>
             <h3 className="font-semibold text-lg mb-2">Description</h3>
@@ -111,6 +129,16 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
 
           {/* Metadata Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-muted/30 rounded-lg p-4">
+              <p className="text-sm text-muted-foreground mb-1">Cluster</p>
+              <p className="font-medium">{issue.databaseName}</p>
+            </div>
+            {issue.instanceId && (
+              <div className="bg-muted/30 rounded-lg p-4">
+                <p className="text-sm text-muted-foreground mb-1">Instance</p>
+                <p className="font-medium font-mono text-sm">{issue.instanceId}</p>
+              </div>
+            )}
             <div className="bg-muted/30 rounded-lg p-4">
               <p className="text-sm text-muted-foreground mb-1">First Seen</p>
               <p className="font-medium">{formatTimeAgo(issue.firstSeen)}</p>
@@ -213,15 +241,15 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t">
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t flex-shrink-0">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-lg border hover:bg-muted transition-colors"
+            className="px-4 py-2 rounded-lg border hover:bg-muted transition-colors text-sm"
           >
             Close
           </button>
         </div>
       </div>
-    </div>
+    </>
   );
 }

@@ -80,7 +80,7 @@ export function OverviewTab({ database, timeRange }: OverviewTabProps) {
           <div>
             <p className="text-sm text-muted-foreground mb-1">Last Checked</p>
             <p className="font-medium">
-              {formatDistanceToNow(database.lastChecked, { addSuffix: true })}
+              {database.lastChecked ? formatDistanceToNow(database.lastChecked, { addSuffix: true }) : 'Never'}
             </p>
           </div>
         </div>

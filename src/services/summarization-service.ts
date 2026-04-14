@@ -238,16 +238,16 @@ function formatTimeWindow(timeRange: { start: Date; end: Date }): string {
 export async function generateAISummary(request: SummarizationRequest): Promise<SummarizationResponse> {
   const timeRange = getTimeRange(request.timeWindow);
 
-  // Build context
-  let databases = mockData.databases;
+  // Build context — prefer live data passed by caller, fall back to mock
+  let databases = request.databases ?? mockData.databases;
   if (request.databaseIds && request.databaseIds.length > 0) {
     databases = databases.filter(db => request.databaseIds!.includes(db.id));
   }
 
   let context: SummarizationContext = {
     databases,
-    issues: mockData.issues,
-    metrics: [], // Could add time-series metrics here
+    issues: request.issues ?? mockData.issues,
+    metrics: [],
     timeRange,
   };
 

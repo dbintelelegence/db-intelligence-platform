@@ -160,19 +160,15 @@ async function callOpenAI(
 }
 
 /**
- * Calls Anthropic API (Claude)
+ * Calls Anthropic Claude via the backend proxy (/ai/chat).
+ * The API key is kept server-side — no CORS issues.
  */
 async function callAnthropic(
   messages: { role: string; content: string }[],
   config: LLMConfig
 ): Promise<string> {
-  const apiKey = config.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY;
+  const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
-  if (!apiKey) {
-    throw new Error('Anthropic API key not configured. Set VITE_ANTHROPIC_API_KEY in your .env file.');
-  }
-
-  // Convert messages format for Anthropic
   const systemMessage = messages.find(m => m.role === 'system');
   const conversationMessages = messages
     .filter(m => m.role !== 'system')
@@ -181,29 +177,25 @@ async function callAnthropic(
       content: m.content,
     }));
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch(`${BASE_URL}/ai/chat`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: config.model || 'claude-3-5-sonnet-20241022',
-      max_tokens: 2000,
-      temperature: config.temperature || 0.7,
+      model: config.model || 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      temperature: config.temperature ?? 0.3,
       system: systemMessage?.content || '',
       messages: conversationMessages,
     }),
   });
 
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Anthropic API error: ${error.error?.message || 'Unknown error'}`);
+    const error = await response.json().catch(() => ({}));
+    throw new Error(`AI proxy error: ${error.detail || response.statusText}`);
   }
 
   const data = await response.json();
-  return data.content[0].text;
+  return data.content;
 }
 
 /**

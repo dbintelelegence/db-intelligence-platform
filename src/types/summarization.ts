@@ -26,6 +26,8 @@ export interface SummarizationRequest {
   timeWindow: TimeWindow;
   conversationHistory?: ConversationMessage[];  // For multi-turn conversations
   databaseIds?: string[];  // Optional: filter to specific databases
+  databases?: import('@/types').Database[];  // Live data override — skips mockData
+  issues?: import('@/types').Issue[];        // Live data override — skips mockData
   includeMetrics?: boolean;
   includeLogs?: boolean;
   includeIssues?: boolean;

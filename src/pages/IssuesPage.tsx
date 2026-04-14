@@ -3,10 +3,11 @@ import { IssuesFilters } from '@/components/features/issues/IssuesFilters';
 import { IssuesSummary } from '@/components/features/issues/IssuesSummary';
 import { IssuesList } from '@/components/features/issues/IssuesList';
 import { IssueDetailPanel } from '@/components/features/issues/IssueDetailPanel';
-import { mockData } from '@/data/mock-data';
+import { useDashboard } from '@/hooks/useDashboard';
 import type { Issue, IssueSeverity, IssueCategory } from '@/types';
 
 export function IssuesPage() {
+  const { issues } = useDashboard();
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<IssueSeverity | 'all'>('all');
   const [categoryFilter, setCategoryFilter] = useState<IssueCategory | 'all'>('all');
@@ -14,7 +15,7 @@ export function IssuesPage() {
 
   // Filter issues based on search and filters
   const filteredIssues = useMemo(() => {
-    let filtered = mockData.issues;
+    let filtered = issues;
 
     // Search filter
     if (searchQuery) {
@@ -94,7 +95,7 @@ export function IssuesPage() {
       {/* Results Count */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Showing {filteredIssues.length} of {mockData.issues.length} issues
+          Showing {filteredIssues.length} of {issues.length} issues
         </p>
       </div>
 
