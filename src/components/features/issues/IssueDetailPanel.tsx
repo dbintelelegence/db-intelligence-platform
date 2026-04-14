@@ -1,4 +1,4 @@
-import { X, AlertTriangle, AlertCircle, Info, Database, Clock, Activity, FileText, GitCommit } from 'lucide-react';
+import { X, AlertTriangle, AlertCircle, Info, Database, Server, Clock, Activity, FileText, GitCommit } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatTimeAgo } from '@/lib/formatters';
 import type { Issue } from '@/types';
@@ -71,6 +71,12 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
                   <Database className="h-4 w-4" />
                   <span>{issue.databaseName}</span>
                 </div>
+                {issue.instanceId && (
+                  <div className="flex items-center gap-1 text-muted-foreground">
+                    <Server className="h-4 w-4" />
+                    <span className="font-mono text-sm">{issue.instanceId}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Clock className="h-4 w-4" />
                   <span>{formatTimeAgo(issue.detectedAt)}</span>
@@ -111,6 +117,16 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
 
           {/* Metadata Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-muted/30 rounded-lg p-4">
+              <p className="text-sm text-muted-foreground mb-1">Cluster</p>
+              <p className="font-medium">{issue.databaseName}</p>
+            </div>
+            {issue.instanceId && (
+              <div className="bg-muted/30 rounded-lg p-4">
+                <p className="text-sm text-muted-foreground mb-1">Instance</p>
+                <p className="font-medium font-mono text-sm">{issue.instanceId}</p>
+              </div>
+            )}
             <div className="bg-muted/30 rounded-lg p-4">
               <p className="text-sm text-muted-foreground mb-1">First Seen</p>
               <p className="font-medium">{formatTimeAgo(issue.firstSeen)}</p>

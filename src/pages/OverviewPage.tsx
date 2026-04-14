@@ -4,7 +4,8 @@ import { useDashboard } from '@/hooks/useDashboard';
 import { formatCurrency } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import { ChevronDown, ChevronRight, AlertCircle, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
-import type { Database } from '@/types';
+import { IssueDetailPanel } from '@/components/features/issues/IssueDetailPanel';
+import type { Database, Issue } from '@/types';
 
 // ── Tiny shared atoms ────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ function StatStrip({ total, healthy, warning, critical, cost }: {
 
 // ── Issue row (ranked list left panel) ───────────────────────────────────────
 
-function IssueRow({ issue, onClick }: { issue: import('@/types').Issue; onClick: () => void }) {
+function IssueRow({ issue, onClick }: { issue: Issue; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -79,9 +80,12 @@ function IssueRow({ issue, onClick }: { issue: import('@/types').Issue; onClick:
           ? <AlertCircle className="h-4 w-4" />
           : <AlertTriangle className="h-4 w-4" />}
       </span>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-sm font-medium leading-snug truncate">{issue.title}</p>
-        <p className="text-xs text-muted-foreground mt-0.5 truncate">{issue.databaseName}</p>
+        <p className="text-xs text-muted-foreground mt-0.5 truncate">
+          {issue.databaseName}
+          {issue.instanceId && <span className="font-mono"> · {issue.instanceId}</span>}
+        </p>
       </div>
       <Chip variant={issue.severity === 'critical' ? 'red' : 'amber'}>
         {issue.severity}
@@ -127,6 +131,7 @@ export function OverviewPage() {
   const databases = rawClusters;
   const [search, setSearch] = useState('');
   const [showHealthy, setShowHealthy] = useState(false);
+  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
   const navigate = useNavigate();
 
   const { critical, degraded, healthy, activeIssues, totalCost } = useMemo(() => {
@@ -235,7 +240,7 @@ export function OverviewPage() {
                   <IssueRow
                     key={issue.id}
                     issue={issue}
-                    onClick={() => navigate(`/databases/${issue.databaseId}`)}
+                    onClick={() => setSelectedIssue(issue)}
                   />
                 ))
               )}
@@ -312,5 +317,10 @@ export function OverviewPage() {
       </div>
 
     </div>
+
+    {/* Issue detail panel — opens inline over the page, no navigation */}
+    {selectedIssue && (
+      <IssueDetailPanel issue={selectedIssue} onClose={() => setSelectedIssue(null)} />
+    )}
   );
 }

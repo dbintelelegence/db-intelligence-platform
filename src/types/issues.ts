@@ -20,6 +20,7 @@ export interface Issue {
   id: string;
   databaseId: string;
   databaseName: string;
+  instanceId?: string | null;  // Set for per-instance issues (e.g. MySQL buffer pool per node)
 
   // Classification
   severity: IssueSeverity;
