@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -19,20 +20,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Always use the Docker service hostname — overrides any localhost default in .env
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/db_intelligence
     ports:
       - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/db_intelligence
-
-      # Grafana Cloud — GCP Prod stack (set in .env or shell env)
-      GRAFANA_GCP_PROD_URL: ${GRAFANA_GCP_PROD_URL:-}
-      GRAFANA_GCP_PROD_INSTANCE_ID: ${GRAFANA_GCP_PROD_INSTANCE_ID:-}
-      GRAFANA_GCP_PROD_API_KEY: ${GRAFANA_GCP_PROD_API_KEY:-}
-
-      # LLM — used by verdict writer and AI chat proxy
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-
-      DEBUG: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,18 +35,23 @@ services:
       - ./backend:/app
     command: >
       sh -c "alembic upgrade head &&
-             python scripts/seed_analyzers.py &&
-             python scripts/seed_normalisation.py &&
+             PYTHONPATH=/app python scripts/seed_analyzers.py &&
+             PYTHONPATH=/app python scripts/seed_normalisation.py &&
+             PYTHONPATH=/app python scripts/seed_mysql_normalisation.py &&
+             PYTHONPATH=/app python scripts/seed_alpha_clusters.py &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    ports:
-      - "5173:5173"
+    restart: unless-stopped
     environment:
       VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
     volumes:
       - .:/app
       - /app/node_modules

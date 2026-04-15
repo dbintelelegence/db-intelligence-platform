@@ -8,14 +8,45 @@
 
 ## Current status
 
-**Phase:** Signal Correlation Analyzers — MySQL Connection Pool Patterns COMPLETE
+**Phase:** Phase 3 Hardening — Docker infrastructure fixed, ready for tests
 **Plan documents:** `_specs/plan-master.md` + `_specs/plan-master-v2.md`
-**Last updated:** April 14 2026 — End of session
+**Last updated:** April 15 2026 — End of session
 **Branch:** `feat/push-ingest-architecture`
 
 ---
 
-## What was completed this session
+## What was completed this session (April 15 2026)
+
+### 1. Docker infrastructure — full persistence and dependency chain fixed
+
+**Problem:** Postgres was running in a stale 6-week-old Docker volume with a completely
+different schema. Backend was connecting to `localhost` instead of the `postgres` service
+hostname. Grafana/Anthropic keys were being overwritten with empty strings on startup.
+No `restart: unless-stopped` so containers didn't survive laptop reboots.
+
+**Fixes applied:**
+
+| File | Change |
+|------|--------|
+| `docker-compose.yml` | `restart: unless-stopped` on all 3 services |
+| `docker-compose.yml` | `env_file: ./backend/.env` — keys load without shell export |
+| `docker-compose.yml` | Removed `${VAR:-}` env overrides that were clobbering real values |
+| `docker-compose.yml` | Added `seed_mysql_normalisation.py` + `seed_alpha_clusters.py` to startup |
+| `docker-compose.yml` | `depends_on: backend` on frontend |
+| `backend/migrations/env.py` | Reads `DATABASE_URL` env var to override `alembic.ini` localhost default |
+
+**Startup sequence now:**
+Docker Desktop (auto-start) → postgres (healthcheck) → backend (migrations + all seeds + uvicorn) → frontend
+
+**Result:** All 9 clusters live, real metrics, 1 critical issue detected. After laptop restart,
+everything restores automatically with no manual steps. `docker compose up -d --build` is the
+only command ever needed.
+
+**IMPORTANT:** Docker Desktop must have "Start at Login" enabled in Settings → General.
+
+---
+
+## What was completed previous session (April 14 2026)
 
 ### 1. Connection Pool Saturation Analyzer — Pattern Classification
 Complete rewrite of `backend/app/analyzers/mysql/connection_pool_saturation.py`.
@@ -143,35 +174,33 @@ The analyzer verdicts (WHY THIS IS HAPPENING / WHAT TO DO) are unaffected — th
 
 ## Next session — recommended actions (priority order)
 
-1. **Top up Anthropic credits** — AI chat panel is blocked until this is done
-2. **Commit all uncommitted files** — 3 new analyzers + all bug fixes from this session
-3. **Write tests** for disk_watermark, fielddata_circuit_breaker, mysql_disk_space (follow test_connection_pool_saturation.py pattern)
-4. **Step 10** — Internal admin views for unmapped_metrics table
-5. **Step 11** — End-to-end integration test
-6. **Next MySQL analyzer** — tmp table overflow or write amplification (see memory/project_signal_correlation_design.md)
+1. **Write tests** for disk_watermark, fielddata_circuit_breaker, mysql_disk_space (follow test_connection_pool_saturation.py pattern)
+2. **Step 3e** — Internal admin views for unmapped_metrics table
+3. **Step 3f** — End-to-end integration test
+4. **Next MySQL analyzer** — tmp table overflow or write amplification (see memory/project_signal_correlation_design.md)
 
 ---
 
 ## How to run things
 
 ```bash
-# Backend (from backend/ directory)
+# Everything (Docker — preferred, persists across reboots)
+docker compose up -d --build     # first time or after code changes
+docker compose up -d             # normal start (no rebuild)
+docker compose logs -f backend   # watch logs
+
+# Frontend: http://localhost:5173
+# Backend:  http://localhost:8000
+
+# Tests (local venv, from backend/ directory)
 PYTHONPATH=/Users/mgutha/Desktop/dbhealth-app/db-intelligence-platform/backend \
-  /Users/mgutha/Desktop/dbhealth-app/db-intelligence-platform/backend/.venv/bin/uvicorn \
-  app.main:app --host 0.0.0.0 --port 8000
+  /Users/mgutha/Desktop/dbhealth-app/db-intelligence-platform/backend/.venv/bin/pytest \
+  tests/ -v
 
-# Push simulator
-PYTHONPATH=... .venv/bin/python scripts/simulate_connpool.py \
-  --token dbi_B3kcu9hWdKwiRqY4N8kLCrGHuDXg-qZM --scenario leak
-
-# Seed sim baselines (run once after resetting DB)
-PYTHONPATH=... .venv/bin/python scripts/seed_sim_baselines.py
-
-# Tests
-PYTHONPATH=... .venv/bin/pytest tests/test_analyzers/test_connection_pool_saturation.py -v
-
-# Frontend (from project root)
-npm run dev
+# Push simulator (local venv)
+PYTHONPATH=/Users/mgutha/Desktop/dbhealth-app/db-intelligence-platform/backend \
+  /Users/mgutha/Desktop/dbhealth-app/db-intelligence-platform/backend/.venv/bin/python \
+  scripts/simulate_connpool.py --token dbi_B3kcu9hWdKwiRqY4N8kLCrGHuDXg-qZM --scenario leak
 ```
 
 ---
