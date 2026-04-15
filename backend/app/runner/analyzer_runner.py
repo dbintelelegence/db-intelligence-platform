@@ -35,11 +35,14 @@ from app.analyzers.elasticsearch.shard_allocation import ShardAllocationAnalyzer
 from app.analyzers.elasticsearch.thread_pool_saturation import (
     ThreadPoolSaturationAnalyzer, PER_INSTANCE_METRICS as TP_PER_INSTANCE_METRICS,
 )
+from app.analyzers.elasticsearch.disk_watermark import DiskWatermarkAnalyzer
+from app.analyzers.elasticsearch.fielddata_circuit_breaker import FielddataCircuitBreakerAnalyzer
 from app.analyzers.mysql.connection_pool_saturation import ConnectionPoolSaturationAnalyzer
 from app.analyzers.mysql.replication_lag import ReplicationLagAnalyzer
 from app.analyzers.mysql.innodb_buffer_pool_pressure import (
     InnodbBufferPoolPressureAnalyzer, PER_INSTANCE_METRICS as INNODB_PER_INSTANCE_METRICS,
 )
+from app.analyzers.mysql.disk_space import MySQLDiskSpaceAnalyzer
 from app.baseline.engine import WINDOW_ALL, get_baselines_for_cluster
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
@@ -81,12 +84,15 @@ ES_ANALYZERS = [
     JvmHeapPressureAnalyzer(),
     ShardAllocationAnalyzer(),
     ThreadPoolSaturationAnalyzer(),
+    DiskWatermarkAnalyzer(),
+    FielddataCircuitBreakerAnalyzer(),
 ]
 
 MYSQL_ANALYZERS = [
     ConnectionPoolSaturationAnalyzer(),
     ReplicationLagAnalyzer(),
     InnodbBufferPoolPressureAnalyzer(),
+    MySQLDiskSpaceAnalyzer(),
 ]
 
 ANALYZERS_BY_DB_TYPE = {

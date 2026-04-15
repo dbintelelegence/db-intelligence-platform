@@ -246,6 +246,11 @@ class BaselineProfile(Base):
     covers_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     covers_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    @property
+    def is_valid(self) -> bool:
+        """Mirrors BaselineResult.is_valid — True when sample_count meets minimum."""
+        return self.sample_count >= 100
+
 
 # ── analyzer_definitions (static seed data) ───────────────────────────────────
 

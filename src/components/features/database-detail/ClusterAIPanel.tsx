@@ -10,11 +10,10 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
-import { generateAISummary } from '@/services/summarization-service';
 import { cn } from '@/lib/utils';
 import { Sparkles, Send, ChevronDown, ChevronRight, User, Bot, Loader2 } from 'lucide-react';
 import type { Database, Issue } from '@/types';
-import type { ConversationMessage, LLMConfig } from '@/types/summarization';
+import type { ConversationMessage } from '@/types/summarization';
 
 // ── Suggested question generation ────────────────────────────────────────────
 
@@ -66,40 +65,58 @@ function buildClusterSystemPrompt(db: Database, issues: Issue[]): string {
   const activeIssues = issues.filter(i => i.status === 'active');
   const critical = activeIssues.filter(i => i.severity === 'critical');
 
+  const issueBlock = activeIssues.length === 0
+    ? 'None — cluster is healthy'
+    : activeIssues.map(i => {
+        const lines = [
+          `[${i.severity.toUpperCase()}] ${i.title}`,
+          `  Observed: ${i.description}`,
+        ];
+        if (i.explanation && i.explanation !== i.description) {
+          lines.push(`  Analysis: ${i.explanation}`);
+        }
+        lines.push(`  Recommendation: ${i.recommendation}`);
+        if (i.relatedMetrics?.length) {
+          lines.push(`  Evidence signals: ${i.relatedMetrics.join(', ')}`);
+        }
+        return lines.join('\n');
+      }).join('\n\n');
+
+  // MySQL-specific metric labels
+  const isMysql = db.type === 'mysql';
+  const mysqlMetrics = isMysql ? `
+- Connection pool: ${db.metrics.connections}% used
+- Replication lag: ${(db as any).metrics?.replicationLagMs != null ? `${(db as any).metrics.replicationLagMs}ms` : 'n/a'}
+- Query latency: ${db.metrics.latency}ms
+- Throughput: ${db.metrics.throughput} qps` : `
+- JVM heap: ${db.metrics.memory}%
+- Latency: ${db.metrics.latency}ms
+- Throughput: ${db.metrics.throughput} qps`;
+
   return `You are an expert database reliability engineer analysing a single specific cluster.
+Your answers are grounded in the analyzer evidence below — do not speculate beyond it.
 
 CLUSTER: ${db.name}
-TYPE: ${db.type}
+TYPE: ${db.type.toUpperCase()}
 CLOUD: ${db.cloud.toUpperCase()} / ${db.region}
-ENVIRONMENT: ${db.environment}
 HEALTH STATUS: ${db.healthStatus} (score: ${db.healthScore}/100)
 
 CURRENT METRICS:
 - CPU: ${db.metrics.cpu}%
-- Memory: ${db.metrics.memory}%
-- Storage: ${db.metrics.storage}%
-- Latency: ${db.metrics.latency}ms
-- Connections: ${db.metrics.connections}/${db.metrics.maxConnections}
-- Throughput: ${db.metrics.throughput} qps
-- Monthly cost: $${db.monthlyCost.toFixed(2)} (trend: ${db.costTrend})
+- Storage: ${db.metrics.storage}%${mysqlMetrics}
 
 ACTIVE ISSUES (${activeIssues.length} total, ${critical.length} critical):
-${activeIssues.length === 0
-    ? 'None — cluster is healthy'
-    : activeIssues.map(i =>
-        `- [${i.severity.toUpperCase()}] ${i.title}: ${i.description}\n  Recommendation: ${i.recommendation}`
-      ).join('\n')}
+${issueBlock}
 
-YOUR ROLE:
-Answer questions specifically about this cluster. Be direct and practical.
-- Lead with the most actionable information
-- Reference the specific metrics and issues above
-- Suggest concrete next steps, not generic advice
-- If you include a terminal command or API call, format it in a code block
-- Keep responses concise — this user is likely in the middle of an incident
-- Do NOT speculate about other clusters or give fleet-wide advice unless asked
+RULES:
+- Answer questions about this cluster only
+- Reference the specific observed values and sigma scores in the analysis above
+- If two issues are present, reason about whether they are causally related
+- Suggest concrete next steps with exact SQL/commands where possible
+- Keep responses concise — the user is likely mid-incident
+- Never recommend actions that modify database configuration without stating it is a manual step
 
-The user is a ${db.environment === 'production' ? 'production engineer likely under time pressure' : 'developer working on a non-production cluster'}. Calibrate urgency accordingly.`;
+The user is a ${db.environment === 'production' ? 'production engineer under time pressure' : 'developer on a non-production cluster'}.`;
 }
 
 // ── Message bubble ────────────────────────────────────────────────────────────
@@ -206,51 +223,52 @@ export function ClusterAIPanel({ database, issues }: ClusterAIPanelProps) {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
     setInput('');
     setLoading(true);
 
     try {
-      const anthropicKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-      const llmConfig: LLMConfig = anthropicKey
-        ? { provider: 'anthropic', apiKey: anthropicKey, model: 'claude-haiku-4-5-20251001', temperature: 0.3 }
-        : { provider: 'mock' };
+      const systemPrompt = buildClusterSystemPrompt(database, issues);
 
-      // Override the system prompt by prepending cluster context to the user message
-      // The existing service doesn't support custom system prompts per-call,
-      // so we inject context directly into the prompt
-      const clusterContext = buildClusterSystemPrompt(database, issues);
-      const enrichedPrompt = `${clusterContext}\n\nUser question: ${text.trim()}`;
-
-      const result = await generateAISummary({
-        prompt: enrichedPrompt,
-        timeWindow: '24h',
-        databaseIds: [database.id],
-        databases: [database],
-        issues,
-        conversationHistory: messages,
-        includeMetrics: true,
-        includeIssues: true,
-        useLLM: llmConfig.provider !== 'mock',
-        llmConfig,
+      // Call our backend proxy directly — keeps API key server-side,
+      // passes full conversation history for multi-turn context
+      const resp = await fetch('http://localhost:8000/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system: systemPrompt,
+          messages: updatedMessages.map(m => ({ role: m.role, content: m.content })),
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1024,
+          temperature: 0.3,
+        }),
       });
 
-      const assistantMsg: ConversationMessage = {
-        id: `${Date.now()}-assistant`,
-        role: 'assistant',
-        content: result.summary,
-        timestamp: new Date(),
-      };
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        const detail = err.detail || '';
+        if (detail.includes('credit balance') || detail.includes('quota')) {
+          throw new Error('AI service is temporarily unavailable (API quota exceeded). The analyzer verdicts above are still accurate.');
+        }
+        throw new Error(`API error ${resp.status}`);
+      }
+      const data = await resp.json();
 
-      setMessages(prev => [...prev, assistantMsg]);
-    } catch (err) {
-      const errMsg: ConversationMessage = {
-        id: `${Date.now()}-error`,
-        role: 'assistant',
-        content: 'Something went wrong. Please try again.',
+      setMessages(prev => [...prev, {
+        id: `${Date.now()}-assistant`,
+        role: 'assistant' as const,
+        content: data.content,
         timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, errMsg]);
+      }]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+      setMessages(prev => [...prev, {
+        id: `${Date.now()}-error`,
+        role: 'assistant' as const,
+        content: msg,
+        timestamp: new Date(),
+      }]);
     } finally {
       setLoading(false);
     }

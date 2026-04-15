@@ -48,6 +48,22 @@ DERIVED_RULES: list[DerivedRule] = [
         compute=lambda v: (v["mysql.connections.current"] / v["mysql.connections.max"]) * 100,
         db_types=[DbType.mysql],
     ),
+    # Approximate per-second rate from 5-minute cumulative counter.
+    # The pull adapter computes this via irate() in PromQL.
+    # Push senders ship the 5-min cumulative total; divide by 300 to get /s.
+    # Skipped when mysql.slow.query.rate is already present (direct push).
+    DerivedRule(
+        output_canonical="mysql.slow.query.rate",
+        inputs=["mysql.slow.queries.total"],
+        compute=lambda v: v["mysql.slow.queries.total"] / 300.0,
+        db_types=[DbType.mysql],
+    ),
+    DerivedRule(
+        output_canonical="mysql.query.rate",
+        inputs=["mysql.queries.total"],
+        compute=lambda v: v["mysql.queries.total"] / 300.0,
+        db_types=[DbType.mysql],
+    ),
     DerivedRule(
         output_canonical="fs.used.percent",
         inputs=["fs.total.total.bytes", "fs.total.available.bytes"],

@@ -160,6 +160,24 @@ MYSQL_CUSTOM_QUERIES: dict[str, str] = {
         '  irate(mysql_global_status_slow_queries{{{sel}}}[5m])'
         ')'
     ),
+    # Total query rate: irate of cumulative queries counter — used to distinguish
+    # traffic surge (queries up) from connection leak (queries flat)
+    "mysql.query.rate": (
+        'avg by (lp_cluster) ('
+        '  irate(mysql_global_status_queries{{{sel}}}[5m])'
+        ')'
+    ),
+    # Average query execution latency in milliseconds.
+    # perf_schema_events_statements_seconds_total / perf_schema_events_statements_total
+    # gives avg seconds per statement; multiply by 1000 for ms.
+    # Falls back to 0 when performance_schema is disabled or exporter doesn't expose it.
+    "mysql.query.latency.ms": (
+        'avg by (lp_cluster) ('
+        '  rate(mysql_perf_schema_events_statements_seconds_total{{{sel}}}[5m])'
+        ') / avg by (lp_cluster) ('
+        '  rate(mysql_perf_schema_events_statements_total{{{sel}}}[5m])'
+        ') * 1000'
+    ),
     # Replication lag: max across all channels and instances (worst-case)
     "mysql.replication.lag.seconds": (
         'max by (lp_cluster) ('

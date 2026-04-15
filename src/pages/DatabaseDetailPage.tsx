@@ -406,13 +406,27 @@ export function DatabaseDetailPage() {
             baseline="< 80%"
             status={database.metrics.storage >= 90 ? 'critical' : database.metrics.storage >= 80 ? 'warn' : 'ok'}
           />
-          <StatWithBaseline
-            label="Latency"
-            value={database.metrics.latency}
-            unit="ms"
-            baseline="< 50ms"
-            status={database.metrics.latency >= 100 ? 'critical' : database.metrics.latency >= 50 ? 'warn' : 'ok'}
-          />
+          {database.type === 'mysql' ? (
+            <StatWithBaseline
+              label="Repl Lag"
+              value={Math.round((database.metrics as any).replicationLagMs ?? 0)}
+              unit="ms"
+              baseline="< 10s"
+              status={
+                ((database.metrics as any).replicationLagMs ?? 0) >= 60000 ? 'critical'
+                : ((database.metrics as any).replicationLagMs ?? 0) >= 10000 ? 'warn'
+                : 'ok'
+              }
+            />
+          ) : (
+            <StatWithBaseline
+              label="Latency"
+              value={database.metrics.latency}
+              unit="ms"
+              baseline="< 50ms"
+              status={database.metrics.latency >= 100 ? 'critical' : database.metrics.latency >= 50 ? 'warn' : 'ok'}
+            />
+          )}
           <StatWithBaseline
             label="Connections"
             value={database.metrics.connections}
@@ -427,7 +441,7 @@ export function DatabaseDetailPage() {
           <StatWithBaseline
             label="Throughput"
             value={database.metrics.throughput}
-            unit="qps"
+            unit={database.type === 'mysql' ? 'qps' : 'qps'}
             status="ok"
           />
         </div>

@@ -146,6 +146,13 @@ NORMALISATION_ENTRIES = [
         "category": "innodb",
         "unit": "count",
     },
+    # ── Query latency (performance_schema — requires performance_schema=ON) ──────
+    {
+        "raw_metric_name": "mysql_perf_schema_events_statements_seconds_total",
+        "canonical_name": "mysql.query.latency.ms",
+        "category": "query",
+        "unit": "ms",
+    },
     # ── Disk (node_exporter — MySQL root mountpoint) ───────────────────────────
     {
         "raw_metric_name": "node_filesystem_size_bytes",

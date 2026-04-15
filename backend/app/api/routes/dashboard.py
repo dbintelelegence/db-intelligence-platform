@@ -108,15 +108,18 @@ def _cluster_to_database(
         storage_pct = ((disk_total - disk_avail) / disk_total * 100.0) if disk_total > 0 else 0.0
         replication_lag = live_metrics.get("mysql.replication.lag.seconds", 0.0)
         buffer_pool_pct = live_metrics.get("mysql.buffer.pool.pressure.pct", 0.0)
+        query_latency_ms = live_metrics.get("mysql.query.latency.ms", 0.0)
+        query_rate = live_metrics.get("mysql.query.rate", 0.0)
 
         metrics = {
-            "cpu":            round(cpu_pct, 1),
-            "memory":         round(buffer_pool_pct, 1),  # buffer pool pressure as memory proxy
-            "storage":        round(storage_pct, 1),
-            "connections":    round(connection_pct, 1),   # connection pool % used
-            "maxConnections": 100,                        # represents 100% scale
-            "latency":        round(replication_lag * 1000, 1),  # lag in ms as latency proxy
-            "throughput":     0,
+            "cpu":              round(cpu_pct, 1),
+            "memory":           round(buffer_pool_pct, 1),    # buffer pool pressure as memory proxy
+            "storage":          round(storage_pct, 1),
+            "connections":      round(connection_pct, 1),     # connection pool % used
+            "maxConnections":   100,                          # represents 100% scale
+            "latency":          round(query_latency_ms, 1),   # avg query execution latency in ms
+            "replicationLagMs": round(replication_lag * 1000, 1),  # replication lag, separate field
+            "throughput":       round(query_rate, 1),         # queries/sec
         }
     else:
         # Elasticsearch metrics
@@ -271,6 +274,8 @@ _MYSQL_LIVE_METRICS = [
     "mysql.buffer.pool.pressure.pct", # CUSTOM_QUERY: buffer_pool/mem_total*100
     "mysql.buffer.pool.bytes",        # raw buffer pool size
     "mysql.memory.total.bytes",       # node_exporter: total host RAM
+    "mysql.query.latency.ms",         # CUSTOM_QUERY: avg query execution time in ms
+    "mysql.query.rate",               # CUSTOM_QUERY: irate of total queries/sec
 ]
 
 
