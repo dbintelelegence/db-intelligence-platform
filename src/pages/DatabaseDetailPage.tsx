@@ -2,18 +2,21 @@ import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTimeRange } from '@/hooks/useTimeRange';
 import { useDashboard } from '@/hooks/useDashboard';
+import { useVerdictTrend } from '@/hooks/useVerdictTrend';
 import { generateMetricsTimeSeries } from '@/data/generators/metrics-time-series-generator';
 import { formatCurrency } from '@/lib/formatters';
 import { ClusterAIPanel } from '@/components/features/database-detail/ClusterAIPanel';
+import type { VerdictTrend } from '@/lib/api';
 import {
-  LineChart, Line, ResponsiveContainer, Tooltip, ReferenceLine, YAxis
+  LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine
 } from 'recharts';
 import {
   ArrowLeft, AlertCircle, AlertTriangle, Info, CheckCircle2,
   ExternalLink, ChevronDown, ChevronRight, Copy, Check
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { formatDistanceToNow } from 'date-fns';
+import { formatTimestamp } from '@/lib/formatters';
+import { format, formatDistanceToNow, parseISO } from 'date-fns';
 import type { Issue } from '@/types';
 
 // ── Severity helpers ──────────────────────────────────────────────────────────
@@ -67,54 +70,154 @@ function CopyableCommand({ command }: { command: string }) {
   );
 }
 
-// ── Inline sparkline ──────────────────────────────────────────────────────────
-// Small trend line with a baseline band — shows the pattern, not a full chart.
+// ── Real metric trend chart ───────────────────────────────────────────────────
 
-function Sparkline({ data, baseline, color }: {
-  data: { value: number }[];
-  baseline?: { low: number; high: number };
-  color: string;
-}) {
-  if (!data.length) return null;
+const INSTANCE_COLORS = ['#ef4444', '#f59e0b', '#3b82f6', '#22c55e', '#8b5cf6', '#06b6d4'];
+
+function TrendChart({ data, issue }: { data: VerdictTrend; issue: Issue }) {
+  const lineColor = issue.severity === 'critical' ? '#ef4444' : '#f59e0b';
+  const multiInstance = data.series.length > 1;
+
+  // Flatten all points for reference line positioning; each series has its own data
   return (
-    <div className="h-14 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-          <YAxis domain={['auto', 'auto']} hide />
-          {baseline && (
-            <>
-              <ReferenceLine y={baseline.low}  stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" strokeWidth={0.8} strokeOpacity={0.5} />
-              <ReferenceLine y={baseline.high} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" strokeWidth={0.8} strokeOpacity={0.5} />
-            </>
-          )}
-          <Line
-            type="monotone"
-            dataKey="value"
-            stroke={color}
-            strokeWidth={1.5}
-            dot={false}
-            activeDot={{ r: 3 }}
-          />
-          <Tooltip
-            contentStyle={{ fontSize: 11, padding: '4px 8px', border: '1px solid hsl(var(--border))', background: 'hsl(var(--background))' }}
-            formatter={(v: unknown) => [(v as number).toFixed(1), '']}
-            labelFormatter={() => ''}
-          />
-        </LineChart>
-      </ResponsiveContainer>
+    <div>
+      <div className="flex items-baseline gap-2 mb-0.5">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          Metric trend (last 24h)
+        </p>
+        <span className="text-[10px] text-muted-foreground font-mono">{data.metric_name}</span>
+      </div>
+      <p className="text-[10px] text-muted-foreground mb-2">Sampled every ~1 min (analyzer cadence)</p>
+
+      {data.series.map((series, idx) => {
+        const color = multiInstance ? INSTANCE_COLORS[idx % INSTANCE_COLORS.length] : lineColor;
+        const points = series.points.map(p => ({ ts: p.ts, value: p.value }));
+
+        return (
+          <div key={series.instance_id ?? 'cluster'} className="h-[120px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={points} margin={{ top: 8, right: 48, bottom: 4, left: 0 }}>
+                <XAxis
+                  dataKey="ts"
+                  tickFormatter={(ts: string) => {
+                    try { return format(parseISO(ts), 'HH:mm'); } catch { return ts; }
+                  }}
+                  tick={{ fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={40}
+                />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(v: number) => `${v}${data.unit}`}
+                  width={36}
+                  domain={['auto', 'auto']}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                {data.baseline && (
+                  <>
+                    <ReferenceLine
+                      y={data.baseline.p50}
+                      stroke="hsl(var(--muted-foreground))"
+                      strokeDasharray="4 3"
+                      strokeOpacity={0.4}
+                      label={{ value: 'p50', position: 'right', fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+                    />
+                    <ReferenceLine
+                      y={data.baseline.p95}
+                      stroke="#f59e0b"
+                      strokeDasharray="4 3"
+                      strokeOpacity={0.5}
+                      label={{ value: 'p95', position: 'right', fontSize: 10, fill: '#f59e0b' }}
+                    />
+                  </>
+                )}
+                {data.issue_started_at && (
+                  <ReferenceLine
+                    x={data.issue_started_at}
+                    stroke={lineColor}
+                    strokeDasharray="4 3"
+                    strokeOpacity={0.7}
+                    label={{ value: 'Issue started', position: 'insideTopLeft', fontSize: 10, fill: lineColor }}
+                  />
+                )}
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  stroke={color}
+                  strokeWidth={1.5}
+                  dot={{ r: 3, fill: color, strokeWidth: 0 }}
+                  activeDot={{ r: 4 }}
+                  isAnimationActive={false}
+                />
+                <Tooltip
+                  contentStyle={{
+                    fontSize: 11,
+                    padding: '4px 8px',
+                    border: '1px solid hsl(var(--border))',
+                    background: 'hsl(var(--background))',
+                  }}
+                  formatter={(v: unknown) => [`${(v as number).toFixed(2)}${data.unit}`, data.metric_name]}
+                  labelFormatter={(ts: string) => {
+                    try { return format(parseISO(ts), 'HH:mm dd MMM'); } catch { return ts; }
+                  }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        );
+      })}
+
+      {/* Per-instance legend */}
+      {multiInstance && (
+        <div className="flex flex-wrap gap-3 mt-1">
+          {data.series.map((series, idx) => (
+            <div key={series.instance_id ?? 'cluster'} className="flex items-center gap-1.5">
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-full"
+                style={{ background: INSTANCE_COLORS[idx % INSTANCE_COLORS.length] }}
+              />
+              <span className="text-[10px] text-muted-foreground font-mono">
+                {series.instance_id ?? 'cluster'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
+function IssueChartSection({ issue }: { issue: Issue }) {
+  const { data, loading, error } = useVerdictTrend(issue.databaseId, issue.analyzerName);
+
+  if (loading) {
+    return <div className="h-[120px] bg-muted/40 rounded animate-pulse" />;
+  }
+
+  // Hide entirely on error or no data
+  if (error || !data || data.series.length === 0) {
+    return null;
+  }
+
+  // Not enough data yet — show progress
+  if (data.points_collected < 3) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Chart available after 3 analyzer runs. {data.points_collected} of 3 collected.
+      </p>
+    );
+  }
+
+  return <TrendChart data={data} issue={issue} />;
+}
+
 // ── Issue card ────────────────────────────────────────────────────────────────
 
-function IssueCard({ issue, sparklineData }: {
-  issue: Issue;
-  sparklineData?: { value: number }[];
-}) {
+function IssueCard({ issue }: { issue: Issue }) {
   const [expanded, setExpanded] = useState(issue.severity === 'critical');
 
-  // Extract a copy-pasteable command from the recommendation if it looks like one
   const hasCommand = issue.recommendation.toLowerCase().includes('set ') ||
     issue.recommendation.toLowerCase().includes('run ') ||
     issue.recommendation.toLowerCase().includes('execute ') ||
@@ -135,13 +238,13 @@ function IssueCard({ issue, sparklineData }: {
       >
         <SeverityIcon severity={issue.severity} className={cn('mt-0.5 flex-shrink-0', severityColor(issue.severity))} />
         <div className="flex-1 min-w-0">
+          <p className="text-xs text-muted-foreground mb-0.5" title={formatDistanceToNow(issue.detectedAt, { addSuffix: true })}>
+            {formatTimestamp(issue.detectedAt)}
+          </p>
           <p className="text-sm font-semibold">{issue.title}</p>
           <p className="text-xs text-muted-foreground mt-0.5">{issue.description}</p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-xs text-muted-foreground">
-            {formatDistanceToNow(issue.detectedAt, { addSuffix: true })}
-          </span>
+        <div className="flex-shrink-0">
           {expanded
             ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -152,19 +255,7 @@ function IssueCard({ issue, sparklineData }: {
       {expanded && (
         <div className="px-4 py-4 bg-background border-t border-border space-y-4">
 
-          {/* Sparkline — only shown if we have data */}
-          {sparklineData && sparklineData.length > 0 && (
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Metric trend (last 24h)</p>
-              <Sparkline
-                data={sparklineData}
-                color={issue.severity === 'critical' ? '#ef4444' : '#f59e0b'}
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">Dashed lines = baseline range</p>
-            </div>
-          )}
-
-          {/* Root cause + recommendation in two columns on wide screens */}
+          {/* Root cause + recommendation — actions first */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
@@ -186,6 +277,9 @@ function IssueCard({ issue, sparklineData }: {
               )}
             </div>
           </div>
+
+          {/* Real trend chart — supporting evidence below the actions */}
+          <IssueChartSection issue={issue} />
 
           {/* Related metrics */}
           {issue.relatedMetrics.length > 0 && (
@@ -243,7 +337,7 @@ function StatWithBaseline({ label, value, unit, baseline, status }: {
 export function DatabaseDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [showAllMetrics, setShowAllMetrics] = useState(false);
+  const [showAllMetrics, setShowAllMetrics] = useState(true);
   const { timeRange } = useTimeRange('24h');
   const { clusters, issues: allIssues, loading } = useDashboard();
 
@@ -269,9 +363,6 @@ export function DatabaseDetailPage() {
     return generateMetricsTimeSeries(database, timeRange);
   }, [database, timeRange]);
 
-  // Show a spinner while the API is still in flight — the cluster may not be in
-  // mock data (which is the temporary fallback), so suppress "not found" until
-  // real data has arrived.
   if (!database && loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
@@ -306,7 +397,7 @@ export function DatabaseDetailPage() {
   };
 
   return (
-    <div className="space-y-5 max-w-5xl">
+    <div className="space-y-4 w-full">
 
       {/* Back nav */}
       <button
@@ -340,7 +431,6 @@ export function DatabaseDetailPage() {
           </p>
         </div>
 
-        {/* Link to source observability tool */}
         <a
           href={`https://app.datadoghq.com/`}
           target="_blank"
@@ -352,167 +442,166 @@ export function DatabaseDetailPage() {
         </a>
       </div>
 
-      {/* ── Active issues ── */}
-      {activeIssues.length > 0 ? (
-        <div className="space-y-3">
-          <p className="text-sm font-semibold">
-            {activeIssues.length} active issue{activeIssues.length !== 1 ? 's' : ''}
-          </p>
-          {activeIssues.map(issue => {
-            // Pick the most relevant sparkline for this issue category
-            const sparkline = metricsData
-              ? issue.category === 'performance' ? metricsData.cpu.map(p => ({ value: p.value }))
-              : issue.category === 'capacity'    ? metricsData.memory.map(p => ({ value: p.value }))
-              : issue.category === 'availability'? metricsData.latency.map(p => ({ value: p.value }))
-              : metricsData.throughput.map(p => ({ value: p.value }))
-              : undefined;
-            return <IssueCard key={issue.id} issue={issue} sparklineData={sparkline} />;
-          })}
-        </div>
-      ) : (
-        <div className="flex items-center gap-3 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3">
-          <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
-          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
-            No active issues — this cluster is healthy
-          </p>
-        </div>
-      )}
-
-      {/* ── Cluster-scoped AI ── */}
-      <ClusterAIPanel database={database} issues={issues} />
-
-      {/* ── Key stats with baseline context ── */}
-      <div>
-        <p className="text-sm font-semibold mb-2">Current metrics</p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+      {/* ── Key stats ── */}
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+        <StatWithBaseline
+          label="CPU"
+          value={database.metrics.cpu}
+          unit="%"
+          baseline="< 70%"
+          status={database.metrics.cpu >= 85 ? 'critical' : database.metrics.cpu >= 70 ? 'warn' : 'ok'}
+        />
+        <StatWithBaseline
+          label="Memory"
+          value={database.metrics.memory}
+          unit="%"
+          baseline="< 75%"
+          status={database.metrics.memory >= 85 ? 'critical' : database.metrics.memory >= 75 ? 'warn' : 'ok'}
+        />
+        <StatWithBaseline
+          label="Storage"
+          value={database.metrics.storage}
+          unit="%"
+          baseline="< 80%"
+          status={database.metrics.storage >= 90 ? 'critical' : database.metrics.storage >= 80 ? 'warn' : 'ok'}
+        />
+        {database.type === 'mysql' ? (
           <StatWithBaseline
-            label="CPU"
-            value={database.metrics.cpu}
-            unit="%"
-            baseline="< 70%"
-            status={database.metrics.cpu >= 85 ? 'critical' : database.metrics.cpu >= 70 ? 'warn' : 'ok'}
-          />
-          <StatWithBaseline
-            label="Memory"
-            value={database.metrics.memory}
-            unit="%"
-            baseline="< 75%"
-            status={database.metrics.memory >= 85 ? 'critical' : database.metrics.memory >= 75 ? 'warn' : 'ok'}
-          />
-          <StatWithBaseline
-            label="Storage"
-            value={database.metrics.storage}
-            unit="%"
-            baseline="< 80%"
-            status={database.metrics.storage >= 90 ? 'critical' : database.metrics.storage >= 80 ? 'warn' : 'ok'}
-          />
-          {database.type === 'mysql' ? (
-            <StatWithBaseline
-              label="Repl Lag"
-              value={Math.round((database.metrics as any).replicationLagMs ?? 0)}
-              unit="ms"
-              baseline="< 10s"
-              status={
-                ((database.metrics as any).replicationLagMs ?? 0) >= 60000 ? 'critical'
-                : ((database.metrics as any).replicationLagMs ?? 0) >= 10000 ? 'warn'
-                : 'ok'
-              }
-            />
-          ) : (
-            <StatWithBaseline
-              label="Latency"
-              value={database.metrics.latency}
-              unit="ms"
-              baseline="< 50ms"
-              status={database.metrics.latency >= 100 ? 'critical' : database.metrics.latency >= 50 ? 'warn' : 'ok'}
-            />
-          )}
-          <StatWithBaseline
-            label="Connections"
-            value={database.metrics.connections}
-            unit={`/ ${database.metrics.maxConnections}`}
-            baseline={`< ${Math.round(database.metrics.maxConnections * 0.8)}`}
+            label="Repl Lag"
+            value={Math.round((database.metrics as any).replicationLagMs ?? 0)}
+            unit="ms"
+            baseline="< 10s"
             status={
-              database.metrics.connections >= database.metrics.maxConnections * 0.9 ? 'critical'
-              : database.metrics.connections >= database.metrics.maxConnections * 0.8 ? 'warn'
+              ((database.metrics as any).replicationLagMs ?? 0) >= 60000 ? 'critical'
+              : ((database.metrics as any).replicationLagMs ?? 0) >= 10000 ? 'warn'
               : 'ok'
             }
           />
+        ) : (
           <StatWithBaseline
-            label="Throughput"
-            value={database.metrics.throughput}
-            unit={database.type === 'mysql' ? 'qps' : 'qps'}
-            status="ok"
+            label="Latency"
+            value={database.metrics.latency}
+            unit="ms"
+            baseline="< 50ms"
+            status={database.metrics.latency >= 100 ? 'critical' : database.metrics.latency >= 50 ? 'warn' : 'ok'}
           />
-        </div>
-      </div>
-
-      {/* ── Full metric charts — opt-in, not default ── */}
-      <div className="rounded-lg border border-border overflow-hidden">
-        <button
-          onClick={() => setShowAllMetrics(v => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-sm"
-        >
-          <span className="font-medium">Metric charts (last 24h)</span>
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <span className="text-xs">These are generated — connect your real data source for live charts</span>
-            {showAllMetrics ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          </div>
-        </button>
-
-        {showAllMetrics && metricsData && (
-          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[
-              { label: 'CPU %',        data: metricsData.cpu,         color: '#f97316', threshold: 80 },
-              { label: 'Memory %',     data: metricsData.memory,      color: '#3b82f6', threshold: 80 },
-              { label: 'Storage %',    data: metricsData.storage,     color: '#8b5cf6', threshold: 85 },
-              { label: 'Latency ms',   data: metricsData.latency,     color: '#eab308', threshold: 100 },
-              { label: 'Connections',  data: metricsData.connections, color: '#22c55e' },
-              { label: 'Throughput',   data: metricsData.throughput,  color: '#06b6d4' },
-            ].map(({ label, data, color, threshold }) => (
-              <div key={label} className="rounded-lg border border-border p-3 bg-background">
-                <p className="text-xs font-medium text-muted-foreground mb-2">{label}</p>
-                <div className="h-24">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={data.map(p => ({ value: parseFloat(p.value.toFixed(1)) }))}>
-                      <YAxis domain={['auto', 'auto']} hide />
-                      {threshold && (
-                        <ReferenceLine y={threshold} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1} strokeOpacity={0.6} />
-                      )}
-                      <Line type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} />
-                      <Tooltip
-                        contentStyle={{ fontSize: 11, padding: '3px 8px', border: '1px solid hsl(var(--border))', background: 'hsl(var(--background))' }}
-                        formatter={(v: unknown) => [v as number, label]}
-                        labelFormatter={() => ''}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            ))}
-          </div>
         )}
+        <StatWithBaseline
+          label="Connections"
+          value={database.metrics.connections}
+          unit={`/ ${database.metrics.maxConnections}`}
+          baseline={`< ${Math.round(database.metrics.maxConnections * 0.8)}`}
+          status={
+            database.metrics.connections >= database.metrics.maxConnections * 0.9 ? 'critical'
+            : database.metrics.connections >= database.metrics.maxConnections * 0.8 ? 'warn'
+            : 'ok'
+          }
+        />
+        <StatWithBaseline
+          label="Throughput"
+          value={database.metrics.throughput}
+          unit="qps"
+          status="ok"
+        />
       </div>
 
-      {/* ── Cost ── */}
-      <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3 text-sm">
-        <span className="text-muted-foreground">Monthly cost</span>
-        <div className="flex items-center gap-3">
-          <span className="font-semibold">{formatCurrency(database.monthlyCost)}</span>
-          <span className={cn(
-            'text-xs',
-            database.costTrend === 'up'   && 'text-red-600',
-            database.costTrend === 'down' && 'text-emerald-600',
-            database.costTrend === 'stable' && 'text-muted-foreground',
-          )}>
-            {database.costTrend === 'up' && '↑ +12% vs last month'}
-            {database.costTrend === 'down' && '↓ −8% vs last month'}
-            {database.costTrend === 'stable' && 'Stable'}
-          </span>
+      {/* ── Two-column layout: main content left, AI panel right ── */}
+      <div className="flex gap-4 items-start">
+
+        {/* ── Left column: issues + metric charts + cost ── */}
+        <div className="flex-1 min-w-0 space-y-4">
+
+          {/* Active issues */}
+          {activeIssues.length > 0 ? (
+            <div className="space-y-3">
+              <p className="text-sm font-semibold">
+                {activeIssues.length} active issue{activeIssues.length !== 1 ? 's' : ''}
+              </p>
+              {activeIssues.map(issue => (
+                <IssueCard key={issue.id} issue={issue} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+              <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
+                No active issues — this cluster is healthy
+              </p>
+            </div>
+          )}
+
+          {/* Metric charts — open by default, full width of left column */}
+          <div className="rounded-lg border border-border overflow-hidden">
+            <button
+              onClick={() => setShowAllMetrics(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-sm"
+            >
+              <span className="font-medium">Metric charts (last 24h)</span>
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <span className="text-xs">These are generated — connect your real data source for live charts</span>
+                {showAllMetrics ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </div>
+            </button>
+
+            {showAllMetrics && metricsData && (
+              <div className="p-4 grid grid-cols-2 lg:grid-cols-3 gap-4">
+                {[
+                  { label: 'CPU %',        data: metricsData.cpu,         color: '#f97316', threshold: 80 },
+                  { label: 'Memory %',     data: metricsData.memory,      color: '#3b82f6', threshold: 80 },
+                  { label: 'Storage %',    data: metricsData.storage,     color: '#8b5cf6', threshold: 85 },
+                  { label: 'Latency ms',   data: metricsData.latency,     color: '#eab308', threshold: 100 },
+                  { label: 'Connections',  data: metricsData.connections, color: '#22c55e' },
+                  { label: 'Throughput',   data: metricsData.throughput,  color: '#06b6d4' },
+                ].map(({ label, data, color, threshold }) => (
+                  <div key={label} className="rounded-lg border border-border p-3 bg-background">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">{label}</p>
+                    <div className="h-24">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={data.map(p => ({ value: parseFloat(p.value.toFixed(1)) }))}>
+                          <YAxis domain={['auto', 'auto']} hide />
+                          {threshold && (
+                            <ReferenceLine y={threshold} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1} strokeOpacity={0.6} />
+                          )}
+                          <Line type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} />
+                          <Tooltip
+                            contentStyle={{ fontSize: 11, padding: '3px 8px', border: '1px solid hsl(var(--border))', background: 'hsl(var(--background))' }}
+                            formatter={(v: unknown) => [v as number, label]}
+                            labelFormatter={() => ''}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Cost */}
+          <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3 text-sm">
+            <span className="text-muted-foreground">Monthly cost</span>
+            <div className="flex items-center gap-3">
+              <span className="font-semibold">{formatCurrency(database.monthlyCost)}</span>
+              <span className={cn(
+                'text-xs',
+                database.costTrend === 'up'   && 'text-red-600',
+                database.costTrend === 'down' && 'text-emerald-600',
+                database.costTrend === 'stable' && 'text-muted-foreground',
+              )}>
+                {database.costTrend === 'up' && '↑ +12% vs last month'}
+                {database.costTrend === 'down' && '↓ −8% vs last month'}
+                {database.costTrend === 'stable' && 'Stable'}
+              </span>
+            </div>
+          </div>
         </div>
-      </div>
 
+        {/* ── Right column: AI panel, sticky ── */}
+        <div className="w-[380px] flex-shrink-0 sticky top-4">
+          <ClusterAIPanel database={database} issues={issues} />
+        </div>
+
+      </div>
     </div>
   );
 }
-

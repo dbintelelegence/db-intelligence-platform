@@ -166,15 +166,24 @@ class JvmHeapPressureAnalyzer(BaseAnalyzer):
             ))
 
         # ── Status ────────────────────────────────────────────────────────────
+        # Absolute fallback thresholds used when no baseline exists.
+        # Heap ≥ 85% is always critical regardless of baseline — GC cannot keep up.
+        # Heap ≥ 70% is always degraded — approaching danger zone.
+        no_baseline = heap_baseline is None or heap_baseline.std_dev == 0
+        heap_abs_critical = heap_pct >= 85.0
+        heap_abs_degraded = heap_pct >= 70.0
+
         is_critical = (
             (heap_vs_p95 and gc_frequency_critical)
             or heap_sigma > settings.critical_sigma_threshold
+            or (no_baseline and heap_abs_critical)
         )
         is_degraded = (
             heap_vs_p75
             or gc_frequency_elevated
             or heap_sigma > settings.degraded_sigma_threshold
             or gc_seconds_sigma > settings.degraded_sigma_threshold
+            or (no_baseline and heap_abs_degraded)
         )
 
         if is_critical:

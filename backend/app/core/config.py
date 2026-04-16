@@ -34,8 +34,9 @@ class Settings(BaseSettings):
     grafana_gcp_prod_instance_id: str = ""
     grafana_gcp_prod_api_key: str = ""
 
-    # Adapter runner
-    analyzer_run_interval_seconds: int = 300
+    # Adapter runner — 60s default gives ~1440 data points/day per analyzer (vs 288 at 300s)
+    # Override via ANALYZER_RUN_INTERVAL_SECONDS env var
+    analyzer_run_interval_seconds: int = 60
     normalisation_cache_ttl_seconds: int = 300
 
     # Push ingest workers — number of coroutines draining the analysis queue

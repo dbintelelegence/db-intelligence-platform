@@ -129,6 +129,9 @@ class FielddataCircuitBreakerAnalyzer(BaseAnalyzer):
             ))
 
         # ── Circuit breaker — direct failure signal ───────────────────────────
+        # circuit_breaker.tripped is fetched via increase([5m]) — it represents
+        # trips in the last 5 minutes, not a lifetime counter. Zero means the
+        # breaker is not currently firing.
         breaker_fired = cb_tripped > 0
         if breaker_fired:
             evidence.append(EvidenceItem(
@@ -157,7 +160,8 @@ class FielddataCircuitBreakerAnalyzer(BaseAnalyzer):
                 confidence_delta=0,
             ))
         elif has_eviction_baseline and eviction_baseline.std_dev == 0:
-            # Baseline is always 0 — any eviction is an anomaly
+            # Baseline std_dev is 0 (cluster normally has zero evictions).
+            # With increase([5m]) any non-zero value means real recent eviction activity.
             if evictions > 0:
                 eviction_sigma = settings.critical_sigma_threshold + 1
             evidence.append(EvidenceItem(

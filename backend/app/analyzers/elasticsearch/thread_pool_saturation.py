@@ -198,15 +198,24 @@ class ThreadPoolSaturationAnalyzer(BaseAnalyzer):
                 ))
 
         # ── Status ────────────────────────────────────────────────────────────
+        # Absolute fallback when no baseline exists.
+        # Any write rejections are critical regardless of baseline — requests are being dropped.
+        # Queue depth ≥ 50 is degraded — pool is backed up.
+        no_rejected_baseline = rejected_baseline is None
+        abs_critical_rejection = no_rejected_baseline and rejected > 0
+        abs_degraded_queue = rejected_baseline is None and queue >= 50
+
         is_critical = (
             zero_baseline_rejection
             or rejected_sigma > settings.critical_sigma_threshold
+            or abs_critical_rejection
         )
         is_degraded = (
             rejected_vs_p95
             or queue_vs_p95
             or rejected_sigma > settings.degraded_sigma_threshold
             or queue_sigma > settings.degraded_sigma_threshold
+            or abs_degraded_queue
         )
 
         if is_critical:

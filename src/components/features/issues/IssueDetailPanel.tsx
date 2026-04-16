@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { X, AlertTriangle, AlertCircle, Info, Database, Server, Clock, Activity, FileText, GitCommit } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { formatTimeAgo } from '@/lib/formatters';
+import { formatTimeAgo, formatTimestamp } from '@/lib/formatters';
 import type { Issue } from '@/types';
 
 interface IssueDetailPanelProps {
@@ -89,9 +89,9 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
                     <span className="font-mono text-sm">{issue.instanceId}</span>
                   </div>
                 )}
-                <div className="flex items-center gap-1 text-muted-foreground">
+                <div className="flex items-center gap-1 text-muted-foreground" title={formatTimeAgo(issue.detectedAt)}>
                   <Clock className="h-4 w-4" />
-                  <span>{formatTimeAgo(issue.detectedAt)}</span>
+                  <span>{formatTimestamp(issue.detectedAt)}</span>
                 </div>
               </div>
             </div>
@@ -141,11 +141,13 @@ export function IssueDetailPanel({ issue, onClose }: IssueDetailPanelProps) {
             )}
             <div className="bg-muted/30 rounded-lg p-4">
               <p className="text-sm text-muted-foreground mb-1">First Seen</p>
-              <p className="font-medium">{formatTimeAgo(issue.firstSeen)}</p>
+              <p className="font-medium text-sm">{formatTimestamp(issue.firstSeen)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{formatTimeAgo(issue.firstSeen)}</p>
             </div>
             <div className="bg-muted/30 rounded-lg p-4">
               <p className="text-sm text-muted-foreground mb-1">Last Seen</p>
-              <p className="font-medium">{formatTimeAgo(issue.lastSeen)}</p>
+              <p className="font-medium text-sm">{formatTimestamp(issue.lastSeen)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{formatTimeAgo(issue.lastSeen)}</p>
             </div>
             <div className="bg-muted/30 rounded-lg p-4">
               <p className="text-sm text-muted-foreground mb-1">Occurrences</p>

@@ -38,6 +38,15 @@ export function formatTimeAgo(date: Date): string {
   return formatDistanceToNow(date, { addSuffix: true });
 }
 
+export function formatTimestamp(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+}
+
 export function formatMetricValue(value: number, unit: string): string {
   switch (unit) {
     case '%':

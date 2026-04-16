@@ -130,6 +130,16 @@ CUSTOM_QUERIES: dict[str, str] = {
     "thread_pool.write.active": (
         'max by (instance, lp_cluster) (elasticsearch_thread_pool_active_count{{type="write",{sel}}})'
     ),
+    # Circuit breaker trips in the last 5 minutes — uses increase() so we get
+    # recent activity, not the lifetime counter total. A static counter at 1359
+    # with zero increase means the breaker is NOT currently firing.
+    "circuit_breaker.tripped": (
+        'sum by (lp_cluster) (increase(elasticsearch_breakers_tripped{{{sel}}}[5m]))'
+    ),
+    # Fielddata evictions in the last 5 minutes — also a counter, use increase().
+    "fielddata.evictions": (
+        'sum by (lp_cluster) (increase(elasticsearch_indices_fielddata_evictions{{{sel}}}[5m]))'
+    ),
 }
 
 # ── MySQL constants ───────────────────────────────────────────────────────────

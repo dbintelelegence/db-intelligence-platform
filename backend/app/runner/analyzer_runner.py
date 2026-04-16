@@ -103,13 +103,13 @@ ANALYZERS_BY_DB_TYPE = {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _get_prev_status(
+async def _get_prev_verdict(
     db,
     cluster_uuid,
     analyzer_name: str,
     instance_id: str | None = None,
-) -> HealthStatus | None:
-    """Fetch the most recent verdict status for this cluster + analyzer (+ instance if set)."""
+) -> Verdict | None:
+    """Fetch the most recent verdict row for this cluster + analyzer (+ instance if set)."""
     conditions = [
         Verdict.cluster_id == cluster_uuid,
         Verdict.analyzer_name == analyzer_name,
@@ -120,13 +120,23 @@ async def _get_prev_status(
         conditions.append(Verdict.instance_id.is_(None))
 
     stmt = (
-        select(Verdict.status)
+        select(Verdict)
         .where(and_(*conditions))
         .order_by(desc(Verdict.run_at))
         .limit(1)
     )
-    row = (await db.execute(stmt)).scalar_one_or_none()
-    return row
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def _get_prev_status(
+    db,
+    cluster_uuid,
+    analyzer_name: str,
+    instance_id: str | None = None,
+) -> HealthStatus | None:
+    """Fetch the most recent verdict status. Thin wrapper over _get_prev_verdict."""
+    prev = await _get_prev_verdict(db, cluster_uuid, analyzer_name, instance_id)
+    return prev.status if prev else None
 
 
 async def _write_verdict(
@@ -268,7 +278,23 @@ async def run_cluster_from_metrics(
 
         for result in results:
             instance_label = f" [{result.instance_id}]" if result.instance_id else ""
-            prev_status = await _get_prev_status(db, cluster_uuid, analyzer.ANALYZER_NAME, result.instance_id)
+            prev_verdict = await _get_prev_verdict(db, cluster_uuid, analyzer.ANALYZER_NAME, result.instance_id)
+            prev_status = prev_verdict.status if prev_verdict else None
+
+            # Skip write if status AND observed text are identical to the last verdict.
+            # At tighter cadences (60s) this prevents row bloat when nothing has changed.
+            # A status change or any change in observed values always writes a new row.
+            if (
+                prev_verdict is not None
+                and prev_verdict.status == result.status
+                and prev_verdict.observed == result.observed
+            ):
+                logger.debug(
+                    f"  [{analyzer.ANALYZER_NAME}]{instance_label} unchanged — skipping write"
+                )
+                all_statuses.append(result.status)
+                continue
+
             verdict = await _write_verdict(db, cluster_uuid, result, prev_status, run_at)
 
             status_changed = prev_status != result.status

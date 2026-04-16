@@ -213,6 +213,7 @@ def _verdict_to_issue(verdict: Verdict, cluster: Cluster) -> dict[str, Any]:
         "firstSeen": verdict.run_at.isoformat(),
         "lastSeen": verdict.run_at.isoformat(),
         "occurrences": 1,
+        "analyzerName": verdict.analyzer_name,
         "relatedMetrics": related_metrics,
         "relatedLogs": [],
         "relatedChanges": [],

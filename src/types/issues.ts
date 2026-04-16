@@ -21,6 +21,7 @@ export interface Issue {
   databaseId: string;
   databaseName: string;
   instanceId?: string | null;  // Set for per-instance issues (e.g. MySQL buffer pool per node)
+  analyzerName: string;        // e.g. "jvm_heap_pressure" — used to call trend endpoint
 
   // Classification
   severity: IssueSeverity;
